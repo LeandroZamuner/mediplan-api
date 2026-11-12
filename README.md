@@ -102,6 +102,16 @@ curl "$API_URL/healthz"            # {"status":"ok"}
 Después: en el repo `mediplan-web` cargar las variables de Actions `NEXT_PUBLIC_API_URL=$API_URL` (y las de Firebase) y volver a correr "Pages";
 en Firebase → Authentication → Configuración → Dominios autorizados agregar `leandrozamuner.github.io`.
 
+### Alternativa sin tarjeta: Render + GitHub Actions
+
+Es lo que usa la demo de la tesis. **Render** (Web Service, runtime Docker, plan Free) construye el `Dockerfile` desde `main`; las variables
+de entorno son las mismas y se cargan en el panel de Render. Health check: `/healthz`.
+
+- Limitación: el plan Free se duerme tras ~15 min sin uso y la primera consulta tarda alrededor de un minuto en despertar.
+- El job de tomas perdidas lo dispara [`.github/workflows/missed-doses.yml`](.github/workflows/missed-doses.yml) cada 5 minutos
+  (GitHub puede demorar algunas ejecuciones). Requiere en el repo: variable de Actions `API_URL` (URL pública de Render, sin barra final)
+  y secreto `JOB_SECRET` (el mismo valor que en Render).
+
 ## Licencia
 
 [MIT](LICENSE): podés usar, copiar y modificar el código manteniendo el aviso de autor, sin garantía.

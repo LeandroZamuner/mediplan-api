@@ -81,8 +81,31 @@ func (r *InviteRepo) ByPlan(ctx context.Context, planID string) ([]*domain.PlanC
 	return r.list(ctx, `WHERE plan_id = $1::uuid`, planID)
 }
 
+// PendingByEmail devuelve las invitaciones vigentes para ese email, con el nombre del plan y el correo de quien invita.
 func (r *InviteRepo) PendingByEmail(ctx context.Context, email string) ([]*domain.PlanCaregiver, error) {
-	return r.list(ctx, `WHERE status = 'pending' AND invite_email = $1`, email)
+	rows, err := r.pool.Query(ctx,
+		`SELECT pc.id::text, pc.plan_id::text, pc.invite_email, COALESCE(pc.caregiver_id::text, ''), pc.status::text,
+		        pc.token_hash, pc.expires_at, pc.created_at, tp.name, u.email
+		   FROM plan_caregivers pc
+		   JOIN treatment_plans tp ON tp.id = pc.plan_id
+		   JOIN users u ON u.id = tp.patient_id
+		  WHERE pc.status = 'pending' AND pc.invite_email = $1
+		  ORDER BY pc.created_at, pc.id`, email)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.PlanCaregiver
+	for rows.Next() {
+		var c domain.PlanCaregiver
+		var status string
+		if err := rows.Scan(&c.ID, &c.PlanID, &c.InviteEmail, &c.CaregiverID, &status, &c.TokenHash, &c.ExpiresAt, &c.CreatedAt, &c.PlanName, &c.PatientEmail); err != nil {
+			return nil, err
+		}
+		c.Status = domain.InviteStatus(status)
+		out = append(out, &c)
+	}
+	return out, rows.Err()
 }
 
 func (r *InviteRepo) Update(ctx context.Context, c *domain.PlanCaregiver) error {

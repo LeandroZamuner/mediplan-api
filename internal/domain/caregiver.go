@@ -24,6 +24,10 @@ type PlanCaregiver struct {
 	TokenHash   string // hash del token del enlace; el token en claro nunca se guarda
 	ExpiresAt   time.Time
 	CreatedAt   time.Time
+
+	// Solo al listar las invitaciones pendientes de alguien: de qué plan son y quién invita.
+	PlanName     string
+	PatientEmail string
 }
 
 var (

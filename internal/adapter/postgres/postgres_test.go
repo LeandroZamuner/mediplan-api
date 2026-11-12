@@ -111,6 +111,29 @@ func TestUserRepo(t *testing.T) {
 		}
 	})
 
+	t.Run("dado un usuario con plan, cuidador, dosis y notificaciones, cuando se elimina, entonces desaparece todo lo suyo y no lo de los demás", func(t *testing.T) {
+		d := givenDB(t)
+		ana := d.givenUser(t, "ana")
+		beto := d.givenUser(t, "beto")
+		planAna := d.givenPlan(t, ana, "Enalapril")
+		planBeto := d.givenPlan(t, beto, "Aspirina")
+		if err := d.users.Delete(ctx, ana.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.users.ByFirebaseUID(ctx, "fb-ana"); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("ana seguía existiendo: %v", err)
+		}
+		if _, err := d.plans.ByID(ctx, planAna.ID); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("el plan de ana seguía: %v", err)
+		}
+		if _, err := d.plans.ByID(ctx, planBeto.ID); err != nil {
+			t.Fatalf("el plan de beto se borró: %v", err)
+		}
+		if err := d.users.Delete(ctx, ana.ID); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("borrar de nuevo: got %v", err)
+		}
+	})
+
 	t.Run("dado un uid inexistente, cuando se busca, entonces no se encuentra", func(t *testing.T) {
 		d := givenDB(t)
 		if _, err := d.users.ByFirebaseUID(ctx, "nadie"); !errors.Is(err, domain.ErrNotFound) {
@@ -793,6 +816,22 @@ func TestPlanUpdateAndStock(t *testing.T) {
 			if err := d.plans.SetMedicationStock(ctx, bad, 1); !errors.Is(err, domain.ErrNotFound) {
 				t.Errorf("%q: got %v", bad, err)
 			}
+		}
+	})
+}
+
+func TestPendingByEmailIncluyeQuienInvita(t *testing.T) {
+	t.Run("dada una invitación pendiente, cuando el invitado lista las suyas, entonces ve el nombre del plan y el correo de quien invita", func(t *testing.T) {
+		d := givenDB(t)
+		ana := d.givenUser(t, "ana")
+		plan := d.givenPlan(t, ana, "Enalapril")
+		d.givenInvite(t, plan.ID, "carla@mail.com", "hash-x")
+		lista, err := d.invites.PendingByEmail(ctx, "carla@mail.com")
+		if err != nil || len(lista) != 1 {
+			t.Fatalf("got %d err=%v", len(lista), err)
+		}
+		if lista[0].PlanName != "Hipertensión" || lista[0].PatientEmail != "ana@mail.com" {
+			t.Fatalf("faltan datos de quien invita: %+v", lista[0])
 		}
 	})
 }

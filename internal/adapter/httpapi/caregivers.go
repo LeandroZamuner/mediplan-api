@@ -23,13 +23,16 @@ type caregiverDTO struct {
 	CaregiverID string    `json:"caregiverId,omitempty"`
 	Status      string    `json:"status"`
 	ExpiresAt   time.Time `json:"expiresAt"`
+	// Solo en las invitaciones pendientes de quien las recibe.
+	PlanName     string `json:"planName,omitempty"`
+	PatientEmail string `json:"patientEmail,omitempty"`
 	// Token solo se devuelve al crear la invitación, para armar el enlace a compartir.
 	Token string `json:"token,omitempty"`
 }
 
 func toCaregiverDTO(c *domain.PlanCaregiver) caregiverDTO {
 	return caregiverDTO{ID: c.ID, PlanID: c.PlanID, Email: c.InviteEmail, CaregiverID: c.CaregiverID,
-		Status: string(c.Status), ExpiresAt: c.ExpiresAt}
+		Status: string(c.Status), ExpiresAt: c.ExpiresAt, PlanName: c.PlanName, PatientEmail: c.PatientEmail}
 }
 
 // Invite: POST /plans/{planID}/caregivers {email}

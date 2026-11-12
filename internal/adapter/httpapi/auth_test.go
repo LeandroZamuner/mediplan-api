@@ -38,6 +38,15 @@ func (r repo) SetTimezone(_ context.Context, userID, tz string) error {
 	}
 	return domain.ErrNotFound
 }
+func (r repo) Delete(_ context.Context, userID string) error {
+	for uid, u := range r {
+		if u.ID == userID {
+			delete(r, uid)
+			return nil
+		}
+	}
+	return domain.ErrNotFound
+}
 func (r repo) Create(_ context.Context, u *domain.User) error {
 	u.ID = "id-1"
 	r[u.FirebaseUID] = u
@@ -157,6 +166,25 @@ func TestTimezoneHTTP(t *testing.T) {
 		}
 		if w := do(h, "PATCH", "/api/v1/me", "ana", `{`); w.Code != 400 {
 			t.Errorf("json roto: %d", w.Code)
+		}
+	})
+}
+
+func TestDeleteAccountHTTP(t *testing.T) {
+	t.Run("dado un usuario registrado, cuando elimina su cuenta, entonces 204 y con el mismo token ya no está registrado", func(t *testing.T) {
+		h := givenAPI()
+		if w := do(h, "DELETE", "/api/v1/me", "ana", ""); w.Code != 204 {
+			t.Fatalf("delete: %d %s", w.Code, w.Body.String())
+		}
+		if w := do(h, "GET", "/api/v1/me", "ana", ""); w.Code == 200 {
+			t.Fatalf("el usuario seguía existiendo: %d", w.Code)
+		}
+	})
+
+	t.Run("dada una petición sin token, cuando intenta eliminar, entonces 401", func(t *testing.T) {
+		h := givenAPI()
+		if w := do(h, "DELETE", "/api/v1/me", "", ""); w.Code != 401 {
+			t.Fatalf("got %d", w.Code)
 		}
 	})
 }

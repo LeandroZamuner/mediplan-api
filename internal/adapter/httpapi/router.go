@@ -46,6 +46,7 @@ func NewRouter(h Handlers) http.Handler {
 			r.Use(authH.Require)
 			r.Get("/me", authH.Me)
 			r.Patch("/me", authH.UpdateMe)
+			r.Delete("/me", authH.DeleteMe)
 
 			if plansH != nil {
 				r.Route("/plans", func(r chi.Router) {

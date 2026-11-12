@@ -39,6 +39,16 @@ func (f *fakeUsers) SetTimezone(_ context.Context, userID, tz string) error {
 	return domain.ErrNotFound
 }
 
+func (f *fakeUsers) Delete(_ context.Context, userID string) error {
+	for uid, u := range f.byUID {
+		if u.ID == userID {
+			delete(f.byUID, uid)
+			return nil
+		}
+	}
+	return domain.ErrNotFound
+}
+
 func (f *fakeUsers) Create(_ context.Context, u *domain.User) error {
 	if _, ok := f.byUID[u.FirebaseUID]; ok {
 		return domain.ErrAlreadyExists
@@ -198,6 +208,29 @@ func TestTimezone(t *testing.T) {
 		}
 		if again, _ := s.Authenticate(ctx, "ok"); again.Timezone != domain.DefaultTimezone {
 			t.Fatalf("no debería haber cambiado: %q", again.Timezone)
+		}
+	})
+}
+
+func TestDeleteAccount(t *testing.T) {
+	t.Run("dado un usuario registrado, cuando elimina su cuenta, entonces ya no se lo encuentra", func(t *testing.T) {
+		s := givenService()
+		u, err := s.Register(context.Background(), "ok", domain.RolePatient)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.DeleteAccount(context.Background(), u); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if _, err := s.Authenticate(context.Background(), "ok"); !errors.Is(err, domain.ErrNotRegistered) {
+			t.Fatalf("esperaba ErrNotRegistered tras borrar, got %v", err)
+		}
+	})
+
+	t.Run("dado un usuario que ya no existe, cuando intenta eliminarlo de nuevo, entonces no se encuentra", func(t *testing.T) {
+		s := givenService()
+		if err := s.DeleteAccount(context.Background(), &domain.User{ID: "fantasma"}); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("got %v", err)
 		}
 	})
 }

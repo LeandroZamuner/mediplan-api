@@ -65,3 +65,19 @@ func (r *UserRepo) TimezoneOf(ctx context.Context, userID string) (string, error
 	}
 	return tz, err
 }
+
+// Delete borra al usuario; las tablas que lo referencian tienen ON DELETE CASCADE
+// (planes con sus medicamentos y dosis, vínculos de cuidador, dispositivos y notificaciones).
+func (r *UserRepo) Delete(ctx context.Context, userID string) error {
+	if !isUUID(userID) {
+		return domain.ErrNotFound
+	}
+	tag, err := r.pool.Exec(ctx, `DELETE FROM users WHERE id = $1::uuid`, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}

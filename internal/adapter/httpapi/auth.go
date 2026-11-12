@@ -115,3 +115,13 @@ func writeError(w http.ResponseWriter, err error) {
 	}
 	writeJSON(w, status, map[string]string{"error": msg})
 }
+
+// DeleteMe: DELETE /me  (elimina la cuenta y todos sus datos)
+func (h *AuthHandler) DeleteMe(w http.ResponseWriter, r *http.Request) {
+	actor, _ := UserFromContext(r.Context())
+	if err := h.svc.DeleteAccount(r.Context(), actor); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

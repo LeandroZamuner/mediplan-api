@@ -29,6 +29,7 @@ type UserRepo interface {
 	ByFirebaseUID(ctx context.Context, uid string) (*domain.User, error) // ErrNotFound
 	SetTimezone(ctx context.Context, userID, tz string) error            // ErrNotFound
 	Create(ctx context.Context, u *domain.User) error                    // completa ID; ErrAlreadyExists si el uid o email ya existen
+	Delete(ctx context.Context, userID string) error                     // ErrNotFound; borra también sus planes, vínculos, dispositivos y avisos
 }
 
 type Service struct {
@@ -105,4 +106,10 @@ func (s *Service) SetTimezone(ctx context.Context, actor *domain.User, tz string
 	updated := *actor
 	updated.Timezone = tz
 	return &updated, nil
+}
+
+// DeleteAccount elimina al usuario y todo lo suyo. La cuenta de Firebase la borra el cliente después,
+// con su propia sesión (hace falta haber iniciado sesión hace poco).
+func (s *Service) DeleteAccount(ctx context.Context, actor *domain.User) error {
+	return s.users.Delete(ctx, actor.ID)
 }

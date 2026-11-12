@@ -33,3 +33,5 @@ jobs:
       - run: go vet ./...
       # Las pruebas de integración crean su propia base temporal en este Postgres.
       - run: go test ./... -count=1
+      # La imagen de producción también tiene que construirse.
+      - run: docker build -t mediplan-api .

@@ -1,9 +1,9 @@
-// Package reminders detecta las tomas omitidas y avisa a los cuidadores del plan.
+// Package reminders detecta las tomas omitidas y avisa a la paciente y a los cuidadores del plan.
 //
-// Se ejecuta de forma periódica (Cloud Scheduler llama a un endpoint). Una toma sin
-// registro cuya hora pasó hace más de GracePeriod se marca como omitida y se avisa
-// a cada cuidador, una sola vez. Solo se procesan planes con cuidadores: sin ellos no
-// hay a quién avisar, y el historial deduce igual las omisiones al consultarlo.
+// Se ejecuta de forma periódica (una tarea programada llama a un endpoint). Una toma sin
+// registro cuya hora pasó hace más de GracePeriod se marca como omitida y se avisa,
+// una sola vez, a la paciente y a cada cuidador. Se procesan todos los planes activos:
+// también los que no tienen cuidadores, porque la paciente necesita ver su propio aviso.
 package reminders
 
 import (
@@ -19,18 +19,18 @@ const (
 	Lookback    = 24 * time.Hour   // no se revisan tomas más viejas (evita avalanchas tras una caída)
 )
 
-// ActivePlan es un plan activo que tiene al menos un cuidador aceptado.
+// ActivePlan es un plan activo, con sus cuidadores aceptados (puede no tener ninguno).
 type ActivePlan struct {
 	Plan         *domain.Plan // con medicamentos y horarios
 	PatientEmail string
 	Timezone     string   // zona horaria IANA del paciente
-	CaregiverIDs []string // cuidadores con vínculo aceptado
+	CaregiverIDs []string // cuidadores con vínculo aceptado (vacío si no tiene)
 }
 
 // Puertos.
 
 type PlanSource interface {
-	ActivePlansWithCaregivers(ctx context.Context) ([]ActivePlan, error)
+	ActivePlans(ctx context.Context) ([]ActivePlan, error)
 }
 
 // Marker marca la toma como omitida SOLO si no tenía ningún registro (atómico).
@@ -62,7 +62,7 @@ func NewService(s PlanSource, m Marker, n Notifier) *Service {
 
 func (s *Service) DetectMissed(ctx context.Context) (Report, error) {
 	var rep Report
-	plans, err := s.source.ActivePlansWithCaregivers(ctx)
+	plans, err := s.source.ActivePlans(ctx)
 	if err != nil {
 		return rep, err
 	}
@@ -70,9 +70,6 @@ func (s *Service) DetectMissed(ctx context.Context) (Report, error) {
 	from, to := now.Add(-Lookback), now.Add(-GracePeriod).Add(time.Nanosecond) // incluye lo que venció justo ahora
 
 	for _, ap := range plans {
-		if len(ap.CaregiverIDs) == 0 {
-			continue
-		}
 		loc, err := time.LoadLocation(ap.Timezone)
 		if err != nil {
 			loc, _ = time.LoadLocation(domain.DefaultTimezone)
@@ -87,18 +84,31 @@ func (s *Service) DetectMissed(ctx context.Context) (Report, error) {
 					continue
 				}
 				rep.NewMissed++
+				s.notify(ctx, &rep, ap.Plan.PatientID, patientNotification(ap, med, at, loc))
 				n := missedNotification(ap, med, at, loc)
 				for _, caregiver := range ap.CaregiverIDs {
-					if err := s.notifier.Notify(ctx, caregiver, n); err != nil {
-						rep.Failed++
-						continue
-					}
-					rep.Notified++
+					s.notify(ctx, &rep, caregiver, n)
 				}
 			}
 		}
 	}
 	return rep, nil
+}
+
+// notify avisa a un usuario; una falla se cuenta pero no frena a los demás destinatarios.
+func (s *Service) notify(ctx context.Context, rep *Report, userID string, n domain.Notification) {
+	if err := s.notifier.Notify(ctx, userID, n); err != nil {
+		rep.Failed++
+		return
+	}
+	rep.Notified++
+}
+
+// patientNotification es el aviso para la propia paciente, en primera persona.
+func patientNotification(ap ActivePlan, med domain.Medication, at time.Time, loc *time.Location) domain.Notification {
+	n := missedNotification(ap, med, at, loc)
+	n.Body = fmt.Sprintf("No registraste %s (%s) de las %s — plan %s", med.Name, med.Dose, at.In(loc).Format("15:04"), ap.Plan.Name)
+	return n
 }
 
 func missedNotification(ap ActivePlan, med domain.Medication, at time.Time, loc *time.Location) domain.Notification {

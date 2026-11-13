@@ -273,7 +273,7 @@ func withJobHeader(h http.Handler, secret string) (int, []byte) {
 }
 
 func TestMissedDoseAlertEndToEnd(t *testing.T) {
-	t.Run("dada una toma vencida sin registrar, cuando corre el disparador del Cloud Scheduler, entonces la cuidadora recibe el aviso una sola vez", func(t *testing.T) {
+	t.Run("dada una toma vencida sin registrar, cuando corre el disparador del Cloud Scheduler, entonces la cuidadora y la paciente reciben cada una su aviso una sola vez", func(t *testing.T) {
 		pool := postgrestest.Setup(t)
 		pusher := &recordingPusher{}
 		h := NewHandler(Deps{Pool: pool, Verifier: fakeVerifier{}, Pusher: pusher, JobSecret: "s3creto"})
@@ -303,7 +303,7 @@ func TestMissedDoseAlertEndToEnd(t *testing.T) {
 		code, report := withJobHeader(h, "s3creto")
 		var rep struct{ NewMissed, Notified, Failed int }
 		_ = json.Unmarshal(report, &rep)
-		if code != 200 || rep.NewMissed != 1 || rep.Notified != 1 || rep.Failed != 0 {
+		if code != 200 || rep.NewMissed != 1 || rep.Notified != 2 || rep.Failed != 0 {
 			t.Fatalf("disparador: %d %s", code, report)
 		}
 
@@ -328,12 +328,20 @@ func TestMissedDoseAlertEndToEnd(t *testing.T) {
 			t.Fatalf("esperaba 1 push visible a Carla, got %d (%+v)", visibles, pusher.sent)
 		}
 
-		// correr de nuevo no repite el aviso; Ana no ve avisos ajenos; Carla lo marca como leído
+		// Ana ve SU aviso (en primera persona, sin nombrarse a sí misma), no el de Carla
+		_, deAna := call(h, "GET", "/api/v1/notifications", "ana", "")
+		var avisosAna []struct {
+			ID, Kind, Body string
+			Data           map[string]string
+		}
+		_ = json.Unmarshal(deAna, &avisosAna)
+		if len(avisosAna) != 1 || avisosAna[0].Kind != "missed_dose" || !strings.Contains(avisosAna[0].Body, "No registraste") || strings.Contains(avisosAna[0].Body, "ana@mail.com") || avisosAna[0].Data["planId"] != planID || avisosAna[0].ID == avisos[0].ID {
+			t.Fatalf("avisos de Ana: %s", deAna)
+		}
+
+		// correr de nuevo no repite el aviso; Ana no puede leer el aviso de Carla; Carla lo marca como leído
 		if _, rep2 := withJobHeader(h, "s3creto"); !strings.Contains(string(rep2), `"newMissed":0`) {
 			t.Errorf("segunda corrida: %s", rep2)
-		}
-		if _, deAna := call(h, "GET", "/api/v1/notifications", "ana", ""); strings.TrimSpace(string(deAna)) != "[]" {
-			t.Errorf("Ana no debería ver avisos de Carla: %s", deAna)
 		}
 		if code, _ := call(h, "POST", "/api/v1/notifications/"+avisos[0].ID+"/read", "ana", ""); code != 404 {
 			t.Errorf("leído ajeno: %d", code)

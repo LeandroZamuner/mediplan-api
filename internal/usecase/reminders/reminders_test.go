@@ -14,7 +14,7 @@ import (
 
 type fakeSource struct{ plans []ActivePlan }
 
-func (f fakeSource) ActivePlansWithCaregivers(context.Context) ([]ActivePlan, error) {
+func (f fakeSource) ActivePlans(context.Context) ([]ActivePlan, error) {
 	return f.plans, nil
 }
 
@@ -51,6 +51,16 @@ func (f *fakeNotifier) Notify(_ context.Context, userID string, n domain.Notific
 	return nil
 }
 
+func (w *world) sentTo(user string) []domain.Notification {
+	var out []domain.Notification
+	for _, s := range w.notifier.sent {
+		if s.userID == user {
+			out = append(out, s.n)
+		}
+	}
+	return out
+}
+
 // ---- givens ----
 // Plan de Ana (Buenos Aires, UTC-3) creado el 1/nov: Enalapril 10 mg, lunes 08:00 y jueves 20:30 (= 23:30 UTC).
 // La toma del jueves 12 a las 20:30 se considera omitida desde las 21:00 locales (00:00 UTC del 13).
@@ -84,26 +94,46 @@ func givenWorld(caregivers ...string) *world {
 func TestDetectMissed(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("dada la toma del jueves 20:30 sin registro y pasado el margen, cuando corre la detección, entonces se marca omitida y se avisa a la cuidadora", func(t *testing.T) {
+	t.Run("dada la toma del jueves 20:30 sin registro y pasado el margen, cuando corre la detección, entonces se marca omitida y se avisa a la cuidadora y a la paciente", func(t *testing.T) {
 		w := givenWorld("carla")
 		rep, err := w.svc.DetectMissed(ctx)
-		if err != nil || rep.NewMissed != 1 || rep.Notified != 1 || rep.Failed != 0 {
+		if err != nil || rep.NewMissed != 1 || rep.Notified != 2 || rep.Failed != 0 {
 			t.Fatalf("reporte %+v err=%v", rep, err)
 		}
 		if w.marker.rows[key("m1", utc(12, 23, 30))] != domain.DoseMissed {
 			t.Fatal("la toma debería quedar marcada como omitida")
 		}
-		got := w.notifier.sent[0]
-		if got.userID != "carla" || got.n.Kind != domain.NotifMissedDose {
-			t.Fatalf("destinatario o tipo incorrecto: %+v", got)
+		carla := w.sentTo("carla")
+		if len(carla) != 1 || carla[0].Kind != domain.NotifMissedDose {
+			t.Fatalf("la cuidadora debería recibir un aviso de dosis no registrada: %+v", carla)
 		}
 		for _, want := range []string{"ana@mail.com", "Enalapril", "10 mg", "20:30", "Hipertensión"} {
-			if !strings.Contains(got.n.Body, want) {
-				t.Errorf("el texto %q debería contener %q", got.n.Body, want)
+			if !strings.Contains(carla[0].Body, want) {
+				t.Errorf("el texto %q debería contener %q", carla[0].Body, want)
 			}
 		}
-		if got.n.Data["planId"] != "p1" || got.n.Data["medicationId"] != "m1" || got.n.Data["scheduledAt"] != "2026-11-12T23:30:00Z" {
-			t.Errorf("datos incorrectos: %+v", got.n.Data)
+		if carla[0].Data["planId"] != "p1" || carla[0].Data["medicationId"] != "m1" || carla[0].Data["scheduledAt"] != "2026-11-12T23:30:00Z" {
+			t.Errorf("datos incorrectos: %+v", carla[0].Data)
+		}
+	})
+
+	t.Run("dada una toma omitida, cuando corre la detección, entonces la paciente recibe su propio aviso en primera persona con la hora local", func(t *testing.T) {
+		w := givenWorld("carla")
+		_, _ = w.svc.DetectMissed(ctx)
+		ana := w.sentTo("ana")
+		if len(ana) != 1 || ana[0].Kind != domain.NotifMissedDose {
+			t.Fatalf("la paciente debería recibir un aviso: %+v", ana)
+		}
+		for _, want := range []string{"No registraste", "Enalapril", "10 mg", "20:30", "Hipertensión"} {
+			if !strings.Contains(ana[0].Body, want) {
+				t.Errorf("el texto %q debería contener %q", ana[0].Body, want)
+			}
+		}
+		if strings.Contains(ana[0].Body, "ana@mail.com") || strings.Contains(ana[0].Body, "23:30") {
+			t.Errorf("no debe nombrar a la paciente por su correo ni usar hora UTC: %q", ana[0].Body)
+		}
+		if ana[0].Data["planId"] != "p1" || ana[0].Data["medicationId"] != "m1" || ana[0].Data["scheduledAt"] != "2026-11-12T23:30:00Z" {
+			t.Errorf("datos incorrectos: %+v", ana[0].Data)
 		}
 	})
 
@@ -120,7 +150,7 @@ func TestDetectMissed(t *testing.T) {
 		w := givenWorld("carla")
 		_, _ = w.svc.DetectMissed(ctx)
 		rep, _ := w.svc.DetectMissed(ctx)
-		if rep.NewMissed != 0 || len(w.notifier.sent) != 1 {
+		if rep.NewMissed != 0 || len(w.notifier.sent) != 2 {
 			t.Fatalf("avisos=%d reporte=%+v", len(w.notifier.sent), rep)
 		}
 	})
@@ -134,18 +164,18 @@ func TestDetectMissed(t *testing.T) {
 		}
 	})
 
-	t.Run("dado un plan sin cuidadores, cuando corre la detección, entonces no se hace nada (no hay a quién avisar)", func(t *testing.T) {
+	t.Run("dado un plan sin cuidadores, cuando corre la detección, entonces igual se marca omitida y se avisa a la paciente", func(t *testing.T) {
 		w := givenWorld()
 		rep, _ := w.svc.DetectMissed(ctx)
-		if rep.NewMissed != 0 || len(w.marker.rows) != 0 || len(w.notifier.sent) != 0 {
-			t.Fatalf("got %+v filas=%d", rep, len(w.marker.rows))
+		if rep.NewMissed != 1 || rep.Notified != 1 || len(w.marker.rows) != 1 || len(w.sentTo("ana")) != 1 {
+			t.Fatalf("got %+v filas=%d avisos=%d", rep, len(w.marker.rows), len(w.notifier.sent))
 		}
 	})
 
 	t.Run("dado un plan con dos cuidadores, cuando una toma se omite, entonces los dos reciben el aviso", func(t *testing.T) {
 		w := givenWorld("carla", "dario")
 		rep, _ := w.svc.DetectMissed(ctx)
-		if rep.NewMissed != 1 || rep.Notified != 2 || len(w.notifier.sent) != 2 {
+		if rep.NewMissed != 1 || rep.Notified != 3 || len(w.sentTo("carla")) != 1 || len(w.sentTo("dario")) != 1 || len(w.sentTo("ana")) != 1 {
 			t.Fatalf("got %+v", rep)
 		}
 	})
@@ -154,7 +184,7 @@ func TestDetectMissed(t *testing.T) {
 		w := givenWorld("carla", "dario")
 		w.notifier.failTo = "carla"
 		rep, err := w.svc.DetectMissed(ctx)
-		if err != nil || rep.Notified != 1 || rep.Failed != 1 || len(w.notifier.sent) != 1 || w.notifier.sent[0].userID != "dario" {
+		if err != nil || rep.Notified != 2 || rep.Failed != 1 || len(w.sentTo("dario")) != 1 || len(w.sentTo("ana")) != 1 || len(w.sentTo("carla")) != 0 {
 			t.Fatalf("got %+v err=%v", rep, err)
 		}
 	})
@@ -184,8 +214,8 @@ func TestDetectMissed(t *testing.T) {
 	t.Run("dado el reloj en una zona distinta, cuando se arma el texto, entonces la hora es la local del paciente", func(t *testing.T) {
 		w := givenWorld("carla")
 		_, _ = w.svc.DetectMissed(ctx)
-		if !strings.Contains(w.notifier.sent[0].n.Body, "20:30") || strings.Contains(w.notifier.sent[0].n.Body, "23:30") {
-			t.Fatalf("la hora debe ser local, no UTC: %q", w.notifier.sent[0].n.Body)
+		if body := w.sentTo("carla")[0].Body; !strings.Contains(body, "20:30") || strings.Contains(body, "23:30") {
+			t.Fatalf("la hora debe ser local, no UTC: %q", body)
 		}
 	})
 }

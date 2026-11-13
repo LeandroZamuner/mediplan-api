@@ -12,15 +12,15 @@ type ReminderRepo struct{ pool *pgxpool.Pool }
 
 func NewReminderRepo(pool *pgxpool.Pool) *ReminderRepo { return &ReminderRepo{pool: pool} }
 
-// ActivePlansWithCaregivers devuelve los planes activos que tienen al menos un
+// ActivePlans devuelve los planes activos que tienen al menos un
 // cuidador aceptado, con lo necesario para calcular y avisar tomas omitidas.
-func (r *ReminderRepo) ActivePlansWithCaregivers(ctx context.Context) ([]reminders.ActivePlan, error) {
+func (r *ReminderRepo) ActivePlans(ctx context.Context) ([]reminders.ActivePlan, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT p.id::text, u.email, u.timezone,
-		        array_agg(pc.caregiver_id::text ORDER BY pc.created_at, pc.id)
+		        COALESCE(array_agg(pc.caregiver_id::text ORDER BY pc.created_at, pc.id) FILTER (WHERE pc.id IS NOT NULL), '{}')
 		 FROM treatment_plans p
 		 JOIN users u ON u.id = p.patient_id
-		 JOIN plan_caregivers pc ON pc.plan_id = p.id AND pc.status = 'accepted'
+		 LEFT JOIN plan_caregivers pc ON pc.plan_id = p.id AND pc.status = 'accepted'
 		 WHERE p.status = 'active'
 		 GROUP BY p.id, u.email, u.timezone
 		 ORDER BY p.id`)

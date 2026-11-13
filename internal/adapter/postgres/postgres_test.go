@@ -12,6 +12,7 @@ import (
 
 	"github.com/lea/mediplan-api/internal/adapter/postgres/postgrestest"
 	"github.com/lea/mediplan-api/internal/domain"
+	"github.com/lea/mediplan-api/internal/usecase/reminders"
 )
 
 func TestMain(m *testing.M) { os.Exit(postgrestest.Run(m)) }
@@ -631,7 +632,7 @@ func TestMarkMissed(t *testing.T) {
 }
 
 func TestReminderRepo(t *testing.T) {
-	t.Run("dados planes con y sin cuidadores aceptados, cuando se consultan los activos, entonces vienen solo los que tienen cuidador, con email, zona horaria y medicamentos", func(t *testing.T) {
+	t.Run("dados planes con y sin cuidadores aceptados, cuando se consultan los activos, entonces vienen todos, cada uno con sus cuidadores aceptados (si tiene), email, zona horaria y medicamentos", func(t *testing.T) {
 		d := givenDB(t)
 		ana, carla, dario := d.givenUser(t, "ana"), d.givenUser(t, "carla"), d.givenUser(t, "dario")
 		_ = d.users.SetTimezone(ctx, ana.ID, "America/Montevideo")
@@ -639,26 +640,34 @@ func TestReminderRepo(t *testing.T) {
 		conCuidadores := d.givenPlan(t, ana, "Enalapril", "Aspirina")
 		soloPendiente := d.givenPlan(t, ana, "X")
 		sinNadie := d.givenPlan(t, ana, "Y")
-		_ = sinNadie
 		for _, u := range []*domain.User{carla, dario} {
 			c := d.givenInvite(t, conCuidadores.ID, u.Email, "h-"+u.FirebaseUID)
 			c.CaregiverID, c.Status = u.ID, domain.InviteAccepted
 			_ = d.invites.Update(ctx, c)
 		}
-		d.givenInvite(t, soloPendiente.ID, "carla@mail.com", "h-pend") // pendiente: no cuenta
+		d.givenInvite(t, soloPendiente.ID, "carla@mail.com", "h-pend") // pendiente: no cuenta como cuidador
 
-		got, err := d.remind.ActivePlansWithCaregivers(ctx)
-		if err != nil || len(got) != 1 {
-			t.Fatalf("esperaba 1 plan, got %d err=%v", len(got), err)
+		got, err := d.remind.ActivePlans(ctx)
+		if err != nil || len(got) != 3 {
+			t.Fatalf("esperaba 3 planes, got %d err=%v", len(got), err)
 		}
-		ap := got[0]
-		if ap.Plan.ID != conCuidadores.ID || ap.PatientEmail != "ana@mail.com" || ap.Timezone != "America/Montevideo" ||
+		byID := map[string]reminders.ActivePlan{}
+		for _, ap := range got {
+			byID[ap.Plan.ID] = ap
+		}
+		ap := byID[conCuidadores.ID]
+		if ap.Plan == nil || ap.Plan.PatientID != ana.ID || ap.PatientEmail != "ana@mail.com" || ap.Timezone != "America/Montevideo" ||
 			len(ap.CaregiverIDs) != 2 || len(ap.Plan.Medications) != 2 || len(ap.Plan.Medications[0].Schedules) != 2 {
-			t.Fatalf("plan incorrecto: %+v", ap)
+			t.Fatalf("plan con cuidadores incorrecto: %+v", ap)
+		}
+		for name, id := range map[string]string{"con invitación pendiente": soloPendiente.ID, "sin nadie": sinNadie.ID} {
+			if x, ok := byID[id]; !ok || len(x.CaregiverIDs) != 0 || x.Plan.PatientID != ana.ID {
+				t.Errorf("plan %s: debería venir sin cuidadores, got %+v", name, x)
+			}
 		}
 	})
 
-	t.Run("dado un plan completado o cancelado con cuidador, cuando se consultan los activos, entonces no aparece", func(t *testing.T) {
+	t.Run("dado un plan completado o cancelado, cuando se consultan los activos, entonces no aparece", func(t *testing.T) {
 		d := givenDB(t)
 		ana, carla := d.givenUser(t, "ana"), d.givenUser(t, "carla")
 		p := d.givenPlan(t, ana, "Enalapril")
@@ -667,7 +676,7 @@ func TestReminderRepo(t *testing.T) {
 		_ = d.invites.Update(ctx, c)
 		for _, status := range []string{"completed", "cancelled"} {
 			_, _ = d.pool.Exec(ctx, "UPDATE treatment_plans SET status = $1::plan_status", status)
-			if got, _ := d.remind.ActivePlansWithCaregivers(ctx); len(got) != 0 {
+			if got, _ := d.remind.ActivePlans(ctx); len(got) != 0 {
 				t.Errorf("%s: no debería aparecer, got %d", status, len(got))
 			}
 		}

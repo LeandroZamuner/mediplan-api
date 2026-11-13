@@ -23,11 +23,12 @@ Variables de entorno: `PORT` (8080), `DATABASE_URL`, `APP_ENV`, `FIREBASE_PROJEC
 Cloud Scheduler no usan navegador, así que no dependen de esta variable.
 Para desarrollar sin Firebase real se puede usar el emulador de Auth (`FIREBASE_AUTH_EMULATOR_HOST`).
 
-## Avisos de dosis omitidas (Cloud Scheduler)
+## Avisos de dosis omitidas
 
-Con `JOB_SECRET` definido se habilita `POST /internal/jobs/missed-doses` (header `X-Job-Secret`). Un job de
-Cloud Scheduler lo llama cada ~10 minutos: marca como omitidas las tomas vencidas hace más de 30 min y avisa a
-los cuidadores del plan (push por FCM + aviso guardado en la app). Sin `JOB_SECRET` el endpoint no existe.
+Con `JOB_SECRET` definido se habilita `POST /internal/jobs/missed-doses` (header `X-Job-Secret`). Una tarea
+programada (GitHub Actions o Cloud Scheduler) lo llama cada 5 minutos: marca como omitidas las tomas vencidas hace
+más de 30 min y avisa **a la paciente** ("No registraste …") **y a cada cuidador** del plan (push por FCM + aviso
+guardado en la app). Los planes sin cuidadores también se procesan. Sin `JOB_SECRET` el endpoint no existe.
 Enviar push requiere credenciales de Firebase (en Cloud Run se toman de la cuenta de servicio del servicio);
 sin ellas el envío se simula en el log y los avisos igual se guardan.
 

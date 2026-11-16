@@ -38,4 +38,8 @@ var (
 	ErrEmailNotVerified = errors.New("email sin verificar")
 	ErrNotRegistered    = errors.New("usuario sin registrar: falta elegir rol")
 	ErrInvalidTimezone  = errors.New("zona horaria inválida")
+	// ErrTooManyRequests: se pidió demasiadas veces seguidas (límite de correos de cuenta).
+	ErrTooManyRequests = errors.New("demasiados pedidos: esperá un minuto y probá de nuevo")
+	// ErrMailUnavailable: no se pudo preparar o enviar el correo (el cliente puede usar el correo estándar de Firebase).
+	ErrMailUnavailable = errors.New("no pudimos enviar el correo ahora")
 )

@@ -13,6 +13,7 @@ import (
 	"github.com/lea/mediplan-api/internal/domain"
 	"github.com/lea/mediplan-api/internal/platform/push"
 	"github.com/lea/mediplan-api/internal/platform/token"
+	"github.com/lea/mediplan-api/internal/usecase/accounts"
 	"github.com/lea/mediplan-api/internal/usecase/auth"
 	"github.com/lea/mediplan-api/internal/usecase/caregivers"
 	"github.com/lea/mediplan-api/internal/usecase/doses"
@@ -31,6 +32,8 @@ type Deps struct {
 	JobSecret string
 	// AllowedOrigins: sitios web autorizados por CORS. Vacío = apagado.
 	AllowedOrigins []string
+	// Accounts habilita los correos de cuenta con diseño propio. nil = rutas no publicadas.
+	Accounts *accounts.Service
 }
 
 func NewHandler(d Deps) http.Handler {
@@ -59,6 +62,9 @@ func NewHandler(d Deps) http.Handler {
 		Doses:          httpapi.NewDosesHandler(dosesSvc),
 		Stock:          httpapi.NewStockHandler(stockSvc),
 		Notifications:  httpapi.NewNotificationsHandler(notifSvc),
+	}
+	if d.Accounts != nil {
+		h.Accounts = httpapi.NewAccountsHandler(d.Accounts)
 	}
 	if d.JobSecret != "" {
 		h.Jobs = httpapi.NewJobsHandler(d.JobSecret, reminders.NewService(postgres.NewReminderRepo(d.Pool), doseRepo, notifSvc))

@@ -13,10 +13,13 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/lea/mediplan-api/internal/adapter/brevo"
 	"github.com/lea/mediplan-api/internal/adapter/firebase"
 	"github.com/lea/mediplan-api/internal/app"
 	"github.com/lea/mediplan-api/internal/config"
+	"github.com/lea/mediplan-api/internal/platform/mail"
 	"github.com/lea/mediplan-api/internal/platform/push"
+	"github.com/lea/mediplan-api/internal/usecase/accounts"
 	"github.com/lea/mediplan-api/internal/usecase/notifications"
 )
 
@@ -51,9 +54,31 @@ func main() {
 		log.Printf("JOB_SECRET vacío: las tareas programadas (dosis omitidas) están deshabilitadas")
 	}
 
+	// Correos de cuenta con diseño propio: hace falta clave de Brevo, remitente, URL de la web y credenciales de Firebase
+	// (o el emulador). Si falta algo, esas rutas no se publican y las apps usan el correo estándar de Firebase.
+	var accountsSvc *accounts.Service
+	_, emulator := os.LookupEnv("FIREBASE_AUTH_EMULATOR_HOST")
+	var mailer accounts.Mailer
+	switch {
+	case cfg.BrevoAPIKey != "" && cfg.MailFrom != "":
+		mailer = brevo.New(cfg.BrevoAPIKey, cfg.MailFrom, cfg.MailFromName)
+	case emulator:
+		mailer = mail.LogMailer{} // desarrollo: el correo queda en el log
+	}
+	if mailer != nil && cfg.WebBaseURL != "" && (cfg.FirebaseCredentials != "" || emulator) {
+		links, err := firebase.NewLinks(ctx, cfg.FirebaseProjectID, []byte(cfg.FirebaseCredentials), emulator)
+		if err != nil {
+			log.Printf("correos propios deshabilitados: %v", err)
+		} else {
+			accountsSvc = accounts.NewService(verifier, links, mailer, accounts.Config{WebBaseURL: cfg.WebBaseURL})
+		}
+	} else {
+		log.Printf("correos propios deshabilitados (faltan BREVO_API_KEY, MAIL_FROM, WEB_BASE_URL o FIREBASE_CREDENTIALS_JSON): se usa el correo estándar de Firebase")
+	}
+
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           app.NewHandler(app.Deps{Pool: pool, Verifier: verifier, Pusher: pusher, JobSecret: cfg.JobSecret, AllowedOrigins: cfg.WebOrigins}),
+		Handler:           app.NewHandler(app.Deps{Pool: pool, Verifier: verifier, Pusher: pusher, JobSecret: cfg.JobSecret, AllowedOrigins: cfg.WebOrigins, Accounts: accountsSvc}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {

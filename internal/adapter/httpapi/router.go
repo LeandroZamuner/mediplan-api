@@ -17,6 +17,7 @@ type Handlers struct {
 	Notifications *NotificationsHandler
 	Stock         *StockHandler
 	Jobs          *JobsHandler
+	Accounts      *AccountsHandler // correos de cuenta con diseño propio; nil = no se publican (los clientes usan el correo de Firebase)
 	// AllowedOrigins son los sitios web que pueden llamar a la API desde el navegador (CORS). Vacío = apagado.
 	AllowedOrigins []string
 }
@@ -37,6 +38,10 @@ func NewRouter(h Handlers) http.Handler {
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Post("/auth/register", authH.Register) // solo requiere token de Firebase válido
+		if h.Accounts != nil {
+			r.Post("/auth/password-reset", h.Accounts.PasswordReset)         // público: uniforme y con límite de pedidos
+			r.Post("/auth/email-verification", h.Accounts.EmailVerification) // token válido aunque el correo no esté verificado
+		}
 		if cgH != nil {
 			// Público: la página del enlace de invitación muestra el nombre del plan sin sesión.
 			r.Get("/invitations/preview", cgH.Preview)

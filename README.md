@@ -32,6 +32,30 @@ guardado en la app). Los planes sin cuidadores también se procesan. Sin `JOB_SE
 Enviar push requiere credenciales de Firebase (en Cloud Run se toman de la cuenta de servicio del servicio);
 sin ellas el envío se simula en el log y los avisos igual se guardan.
 
+## Correos de cuenta (verificar correo y recuperar contraseña)
+
+Firebase solo genera el enlace seguro (un código de un solo uso); el correo con el diseño de MediPlan lo arma y envía esta API,
+y el botón lleva a la página `/accion` de la web (no a la pantalla genérica de Firebase).
+
+- `POST /api/v1/auth/password-reset` `{"email"}`: público. Responde siempre `202` exista o no la cuenta (no revela quién tiene cuenta).
+  Límites: 1 correo por dirección por minuto y 10 pedidos por IP cada 15 minutos (`429`).
+- `POST /api/v1/auth/email-verification`: con el ID token (aunque el correo aún no esté verificado). `{"sent":true}`, o
+  `{"sent":false,"alreadyVerified":true}` si ya estaba verificado. 1 por minuto por usuario (`429`).
+- Si el envío falla responde `503` y las apps usan el correo estándar de Firebase como respaldo. Si falta configuración, las rutas
+  no se publican (`404`) y pasa lo mismo.
+
+Variables (todas necesarias; **las dos marcadas son secretos: solo en el panel del hosting, nunca en el repo ni en el chat**):
+
+| Variable | Qué es |
+| --- | --- |
+| `WEB_BASE_URL` | Raíz de la web, p. ej. `https://leandrozamuner.github.io/mediplan-web` |
+| `BREVO_API_KEY` 🔒 | Clave de la API de Brevo (plan gratis: 300 correos por día) |
+| `MAIL_FROM` / `MAIL_FROM_NAME` | Remitente verificado en Brevo / nombre que se muestra (`MediPlan`) |
+| `FIREBASE_CREDENTIALS_JSON` 🔒 | Contenido del JSON de la cuenta de servicio de Firebase (para generar los enlaces) |
+
+Se usa la API HTTPS de Brevo y no SMTP porque **Render bloquea el SMTP saliente (puertos 25, 465 y 587) en el plan gratuito**.
+En local, con el emulador de Auth (`FIREBASE_AUTH_EMULATOR_HOST`) y `WEB_BASE_URL`, no hacen falta claves: el correo se escribe en el log.
+
 ## Tests
 
 ```bash

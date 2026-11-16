@@ -104,6 +104,10 @@ func writeError(w http.ResponseWriter, err error) {
 		status, msg = http.StatusForbidden, err.Error()
 	case errors.Is(err, domain.ErrInvalidRole), errors.Is(err, domain.ErrInvalidPlan), errors.Is(err, domain.ErrInvalidEmail), errors.Is(err, domain.ErrInvalidTimezone), errors.Is(err, domain.ErrInvalidDose), errors.Is(err, domain.ErrInvalidRange), errors.Is(err, domain.ErrInvalidDeviceToken), errors.Is(err, domain.ErrInvalidStock):
 		status, msg = http.StatusUnprocessableEntity, err.Error()
+	case errors.Is(err, domain.ErrTooManyRequests):
+		status, msg = http.StatusTooManyRequests, err.Error()
+	case errors.Is(err, domain.ErrMailUnavailable):
+		status, msg = http.StatusServiceUnavailable, err.Error()
 	case errors.Is(err, domain.ErrForbidden):
 		status, msg = http.StatusForbidden, err.Error()
 	case errors.Is(err, domain.ErrAlreadyInvited):

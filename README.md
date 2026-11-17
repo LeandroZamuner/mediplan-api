@@ -56,6 +56,33 @@ Variables (todas necesarias; **las dos marcadas son secretos: solo en el panel d
 Se usa la API HTTPS de Brevo y no SMTP porque **Render bloquea el SMTP saliente (puertos 25, 465 y 587) en el plan gratuito**.
 En local, con el emulador de Auth (`FIREBASE_AUTH_EMULATOR_HOST`) y `WEB_BASE_URL`, no hacen falta claves: el correo se escribe en el log.
 
+## Plan gratis y Premium
+
+Cada cuenta es gratis o Premium (tabla `subscriptions`; sin fila = gratis). Los topes **solo frenan crear** cosas nuevas: nunca se borra
+ni se bloquea la edición de lo que ya existe.
+
+| | Gratis | Premium |
+| --- | --- | --- |
+| Planes activos | 1 | sin tope |
+| Medicamentos (entre sus planes activos) | 3 | sin tope |
+| Cuidadores por plan (pendientes o aceptados) | 1 | sin tope |
+
+- Rige siempre el nivel del **dueño del plan** (aunque agregue una cuidadora).
+- Superar un tope responde `402` con `{"error", "code":"plan_limit", "resource":"plans|medications|caregivers", "limit"}`.
+- `GET /api/v1/me/subscription` devuelve `tier`, `cancelled`, `currentPeriodEnd`, `limits` (`null` = sin tope) y `usage`.
+- Una suscripción activa con el período vencido hace menos de 3 días sigue siendo Premium (cobro demorado); una cancelada
+  lo es hasta que termina el período pagado.
+
+## Migraciones
+
+Los archivos de `migrations/` se aplican **en orden** (`001`, `002`, …) y son idempotentes desde la 002. En una base ya creada alcanza con aplicar
+las nuevas **antes** de desplegar el código que las usa:
+
+```bash
+read -rs DATABASE_URL            # pegá la URL de conexión y Enter
+sed '/-- +goose Down/,$d' migrations/002_subscriptions.sql | docker run --rm -i postgres:16 psql "$DATABASE_URL" -v ON_ERROR_STOP=1
+```
+
 ## Tests
 
 ```bash

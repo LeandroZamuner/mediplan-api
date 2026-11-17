@@ -94,6 +94,12 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func writeError(w http.ResponseWriter, err error) {
+	var limit *domain.PlanLimitError
+	if errors.As(err, &limit) {
+		// 402: la app muestra la pantalla de Premium usando el recurso y el tope.
+		writeJSON(w, http.StatusPaymentRequired, map[string]any{"error": limit.Error(), "code": "plan_limit", "resource": limit.Resource, "limit": limit.Limit})
+		return
+	}
 	status, msg := http.StatusInternalServerError, "error interno"
 	switch {
 	case errors.Is(err, domain.ErrInvalidToken):

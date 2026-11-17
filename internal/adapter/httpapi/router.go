@@ -17,6 +17,7 @@ type Handlers struct {
 	Notifications *NotificationsHandler
 	Stock         *StockHandler
 	Jobs          *JobsHandler
+	Billing       *BillingHandler  // nivel gratis/Premium y topes
 	Accounts      *AccountsHandler // correos de cuenta con diseño propio; nil = no se publican (los clientes usan el correo de Firebase)
 	// AllowedOrigins son los sitios web que pueden llamar a la API desde el navegador (CORS). Vacío = apagado.
 	AllowedOrigins []string
@@ -52,6 +53,9 @@ func NewRouter(h Handlers) http.Handler {
 			r.Get("/me", authH.Me)
 			r.Patch("/me", authH.UpdateMe)
 			r.Delete("/me", authH.DeleteMe)
+			if h.Billing != nil {
+				r.Get("/me/subscription", h.Billing.Subscription)
+			}
 
 			if plansH != nil {
 				r.Route("/plans", func(r chi.Router) {

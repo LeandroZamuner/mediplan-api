@@ -844,3 +844,58 @@ func TestPendingByEmailIncluyeQuienInvita(t *testing.T) {
 		}
 	})
 }
+
+// ---- suscripciones ----
+
+func TestSubscriptions(t *testing.T) {
+	d := givenDB(t)
+	repo := NewSubscriptionRepo(d.pool)
+
+	t.Run("dado un usuario sin suscripción, cuando se consulta, entonces no se encuentra (es gratis)", func(t *testing.T) {
+		u := d.givenUser(t, "gratis")
+		if _, err := repo.ByUser(ctx, u.ID); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("esperaba ErrNotFound y fue %v", err)
+		}
+	})
+	t.Run("dado un usuario, cuando se guarda su suscripción Premium y luego se cancela, entonces se actualiza la misma fila", func(t *testing.T) {
+		u := d.givenUser(t, "premium")
+		end := time.Now().Add(30 * 24 * time.Hour).UTC().Truncate(time.Second)
+		sub := &domain.Subscription{UserID: u.ID, Tier: domain.TierPremium, Status: domain.SubActive, Provider: "mercadopago", ProviderRef: "pre-123", CurrentPeriodEnd: &end}
+		if err := repo.Upsert(ctx, sub); err != nil {
+			t.Fatal(err)
+		}
+		got, err := repo.ByUser(ctx, u.ID)
+		if err != nil || got.Tier != domain.TierPremium || got.Status != domain.SubActive || got.ProviderRef != "pre-123" || got.CurrentPeriodEnd == nil || !got.CurrentPeriodEnd.Equal(end) {
+			t.Fatalf("suscripción inesperada: %+v err=%v", got, err)
+		}
+		sub.Status = domain.SubCancelled
+		if err := repo.Upsert(ctx, sub); err != nil {
+			t.Fatal(err)
+		}
+		got, _ = repo.ByUser(ctx, u.ID)
+		if got.Status != domain.SubCancelled {
+			t.Fatalf("estado inesperado: %s", got.Status)
+		}
+	})
+	t.Run("dada una suscripción con id del medio de pago, cuando se busca por ese id, entonces se encuentra", func(t *testing.T) {
+		u := d.givenUser(t, "porref")
+		_ = repo.Upsert(ctx, &domain.Subscription{UserID: u.ID, Tier: domain.TierPremium, Status: domain.SubActive, Provider: "mercadopago", ProviderRef: "pre-999"})
+		got, err := repo.ByProviderRef(ctx, "mercadopago", "pre-999")
+		if err != nil || got.UserID != u.ID {
+			t.Fatalf("got=%+v err=%v", got, err)
+		}
+		if _, err := repo.ByProviderRef(ctx, "mercadopago", "no-existe"); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("esperaba ErrNotFound y fue %v", err)
+		}
+	})
+	t.Run("dado un usuario con suscripción, cuando se elimina su cuenta, entonces su suscripción se borra con él", func(t *testing.T) {
+		u := d.givenUser(t, "borrar")
+		_ = repo.Upsert(ctx, &domain.Subscription{UserID: u.ID, Tier: domain.TierPremium, Status: domain.SubActive})
+		if err := d.users.Delete(ctx, u.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repo.ByUser(ctx, u.ID); !errors.Is(err, domain.ErrNotFound) {
+			t.Fatalf("esperaba ErrNotFound y fue %v", err)
+		}
+	})
+}

@@ -579,3 +579,53 @@ func TestPatchKeepsStockEndToEnd(t *testing.T) {
 		}
 	})
 }
+
+func TestFreemiumEndToEnd(t *testing.T) {
+	t.Run("dada la API real, cuando una cuenta gratis supera los topes, entonces recibe 402 y al pasar a Premium puede crear sin límite", func(t *testing.T) {
+		// Given: API sobre Postgres y Ana, registrada como paciente
+		pool := postgrestest.Setup(t)
+		h := NewHandler(Deps{Pool: pool, Verifier: fakeVerifier{}})
+		if code, b := call(h, "POST", "/api/v1/auth/register", "ana", `{"role":"patient"}`); code != 200 {
+			t.Fatalf("registro: %d %s", code, b)
+		}
+		med := func(n string) string {
+			return `{"name":"` + n + `","dose":"10 mg","startDate":"2026-11-01","schedules":[{"dayOfWeek":1,"timeOfDay":"08:00"}]}`
+		}
+		fourMeds := `{"name":"Grande","medications":[` + med("a") + `,` + med("b") + `,` + med("c") + `,` + med("d") + `]}`
+
+		// When/Then: un plan con 4 medicamentos supera el tope gratis
+		code, body := call(h, "POST", "/api/v1/plans", "ana", fourMeds)
+		if code != 402 || field(t, body, "code") != "plan_limit" || field(t, body, "resource") != "medications" {
+			t.Fatalf("esperaba 402 por medicamentos y fue %d %s", code, body)
+		}
+		// Un plan con 3 entra; un segundo plan activo no
+		threeMeds := `{"name":"Uno","medications":[` + med("a") + `,` + med("b") + `,` + med("c") + `]}`
+		if code, b := call(h, "POST", "/api/v1/plans", "ana", threeMeds); code != 201 && code != 200 {
+			t.Fatalf("el plan de 3 debía crearse: %d %s", code, b)
+		}
+		code, body = call(h, "POST", "/api/v1/plans", "ana", `{"name":"Otro","medications":[`+med("z")+`]}`)
+		if code != 402 || field(t, body, "resource") != "plans" {
+			t.Fatalf("esperaba 402 por planes y fue %d %s", code, body)
+		}
+		// Su estado lo refleja
+		code, body = call(h, "GET", "/api/v1/me/subscription", "ana", "")
+		if code != 200 || field(t, body, "tier") != "free" {
+			t.Fatalf("estado gratis inesperado: %d %s", code, body)
+		}
+
+		// When: pasa a Premium (lo hará la integración de pago; acá se carga la suscripción directo)
+		if _, err := pool.Exec(context.Background(),
+			`INSERT INTO subscriptions (user_id, tier, status, current_period_end) SELECT id, 'premium', 'active', now() + interval '30 days' FROM users WHERE email = 'ana@mail.com'`); err != nil {
+			t.Fatal(err)
+		}
+
+		// Then: ya no hay topes y el estado lo dice
+		if code, b := call(h, "POST", "/api/v1/plans", "ana", `{"name":"Otro","medications":[`+med("z")+`]}`); code != 201 && code != 200 {
+			t.Fatalf("con Premium debía crearse: %d %s", code, b)
+		}
+		code, body = call(h, "GET", "/api/v1/me/subscription", "ana", "")
+		if code != 200 || field(t, body, "tier") != "premium" {
+			t.Fatalf("estado Premium inesperado: %d %s", code, body)
+		}
+	})
+}

@@ -46,6 +46,11 @@ type Syncer interface {
 	Sync(ctx context.Context, userIDs []string, planID string)
 }
 
+// Limiter dice qué topes tiene un usuario según su nivel (gratis o Premium). Es opcional: sin él no hay topes.
+type Limiter interface {
+	LimitsOf(ctx context.Context, userID string) (domain.Limits, error)
+}
+
 type MedicationInput struct {
 	Name         string
 	Dose         string
@@ -59,8 +64,50 @@ type MedicationInput struct {
 type Service struct {
 	plans PlanRepo
 	links CaregiverLinks
-	sync  Syncer // opcional
+	sync  Syncer  // opcional
+	limit Limiter // opcional
 	now   func() time.Time
+}
+
+// SetLimits activa los topes del plan gratuito. Los topes frenan CREAR planes y medicamentos;
+// nunca se borra ni se bloquea la edición de lo que ya existe.
+func (s *Service) SetLimits(l Limiter) { s.limit = l }
+
+// Usage cuenta los planes activos del usuario y los medicamentos de esos planes.
+func (s *Service) Usage(ctx context.Context, userID string) (activePlans, medications int, err error) {
+	mine, err := s.plans.ByPatient(ctx, userID)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, p := range mine {
+		if p.Status == domain.PlanActive {
+			activePlans++
+			medications += len(p.Medications)
+		}
+	}
+	return activePlans, medications, nil
+}
+
+// checkRoom verifica que el dueño pueda sumar newPlans planes y newMeds medicamentos según su nivel.
+func (s *Service) checkRoom(ctx context.Context, ownerID string, newPlans, newMeds int) error {
+	if s.limit == nil {
+		return nil
+	}
+	lim, err := s.limit.LimitsOf(ctx, ownerID)
+	if err != nil {
+		return err
+	}
+	plans, medications, err := s.Usage(ctx, ownerID)
+	if err != nil {
+		return err
+	}
+	if domain.Exceeds(plans, newPlans, lim.MaxActivePlans) {
+		return &domain.PlanLimitError{Resource: domain.ResourcePlans, Limit: lim.MaxActivePlans}
+	}
+	if domain.Exceeds(medications, newMeds, lim.MaxMedications) {
+		return &domain.PlanLimitError{Resource: domain.ResourceMedications, Limit: lim.MaxMedications}
+	}
+	return nil
 }
 
 // SetSyncer activa el aviso de cambios a los participantes del plan.
@@ -147,6 +194,9 @@ func (s *Service) CreatePlan(ctx context.Context, actor *domain.User, name strin
 		}
 		plan.Medications = append(plan.Medications, m)
 	}
+	if err := s.checkRoom(ctx, actor.ID, 1, len(plan.Medications)); err != nil {
+		return nil, err
+	}
 	if err := s.plans.Create(ctx, plan); err != nil {
 		return nil, err
 	}
@@ -190,6 +240,10 @@ func (s *Service) AddMedication(ctx context.Context, actor *domain.User, planID 
 	}
 	m, err := toMedication(in)
 	if err != nil {
+		return nil, err
+	}
+	// Rige el nivel del DUEÑO del plan, aunque quien agrega sea una cuidadora.
+	if err := s.checkRoom(ctx, p.PatientID, 0, 1); err != nil {
 		return nil, err
 	}
 	p.Medications = append(p.Medications, m)

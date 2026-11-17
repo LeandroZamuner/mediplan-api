@@ -15,6 +15,7 @@ import (
 	"github.com/lea/mediplan-api/internal/platform/token"
 	"github.com/lea/mediplan-api/internal/usecase/accounts"
 	"github.com/lea/mediplan-api/internal/usecase/auth"
+	"github.com/lea/mediplan-api/internal/usecase/billing"
 	"github.com/lea/mediplan-api/internal/usecase/caregivers"
 	"github.com/lea/mediplan-api/internal/usecase/doses"
 	"github.com/lea/mediplan-api/internal/usecase/notifications"
@@ -48,6 +49,11 @@ func NewHandler(d Deps) http.Handler {
 	notifSvc := notifications.NewService(postgres.NewDeviceRepo(d.Pool), postgres.NewNotificationRepo(d.Pool), d.Pusher)
 
 	plansSvc := plans.NewService(planRepo, links)
+	// Nivel gratis/Premium: la suscripción vive en la base; los topes solo frenan crear planes, medicamentos y cuidadores.
+	billingSvc := billing.NewService(postgres.NewSubscriptionRepo(d.Pool), plansSvc)
+	plansSvc.SetLimits(billingSvc)
+	caregiversSvc := caregivers.NewService(links, planRepo, token.Generator{})
+	caregiversSvc.SetLimits(billingSvc)
 	plansSvc.SetSyncer(planSyncer{notifSvc}) // los cambios de horarios llegan a los celulares para reprogramar alarmas
 
 	stockSvc := stock.NewService(postgres.NewStockRepo(d.Pool), plansSvc, participants{links}, notifSvc)
@@ -58,10 +64,11 @@ func NewHandler(d Deps) http.Handler {
 		AllowedOrigins: d.AllowedOrigins,
 		Auth:           httpapi.NewAuthHandler(auth.NewService(d.Verifier, users)),
 		Plans:          httpapi.NewPlansHandler(plansSvc),
-		Caregivers:     httpapi.NewCaregiversHandler(caregivers.NewService(links, planRepo, token.Generator{})),
+		Caregivers:     httpapi.NewCaregiversHandler(caregiversSvc),
 		Doses:          httpapi.NewDosesHandler(dosesSvc),
 		Stock:          httpapi.NewStockHandler(stockSvc),
 		Notifications:  httpapi.NewNotificationsHandler(notifSvc),
+		Billing:        httpapi.NewBillingHandler(billingSvc),
 	}
 	if d.Accounts != nil {
 		h.Accounts = httpapi.NewAccountsHandler(d.Accounts)

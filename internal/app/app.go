@@ -35,6 +35,15 @@ type Deps struct {
 	AllowedOrigins []string
 	// Accounts habilita los correos de cuenta con diseño propio. nil = rutas no publicadas.
 	Accounts *accounts.Service
+	// Payments habilita el cobro de Premium con Mercado Pago. nil = nadie puede pagar (todas las cuentas son gratis).
+	Payments *PaymentsDeps
+}
+
+// PaymentsDeps: el medio de pago, el precio y la clave que firma los avisos.
+type PaymentsDeps struct {
+	Gateway       billing.Gateway
+	Config        billing.PaymentsConfig
+	WebhookSecret string
 }
 
 func NewHandler(d Deps) http.Handler {
@@ -50,7 +59,8 @@ func NewHandler(d Deps) http.Handler {
 
 	plansSvc := plans.NewService(planRepo, links)
 	// Nivel gratis/Premium: la suscripción vive en la base; los topes solo frenan crear planes, medicamentos y cuidadores.
-	billingSvc := billing.NewService(postgres.NewSubscriptionRepo(d.Pool), plansSvc)
+	subRepo := postgres.NewSubscriptionRepo(d.Pool)
+	billingSvc := billing.NewService(subRepo, plansSvc)
 	plansSvc.SetLimits(billingSvc)
 	caregiversSvc := caregivers.NewService(links, planRepo, token.Generator{})
 	caregiversSvc.SetLimits(billingSvc)
@@ -69,6 +79,9 @@ func NewHandler(d Deps) http.Handler {
 		Stock:          httpapi.NewStockHandler(stockSvc),
 		Notifications:  httpapi.NewNotificationsHandler(notifSvc),
 		Billing:        httpapi.NewBillingHandler(billingSvc),
+	}
+	if d.Payments != nil {
+		h.Billing.WithPayments(billing.NewPayments(billingSvc, subRepo, d.Payments.Gateway, d.Payments.Config), d.Payments.WebhookSecret)
 	}
 	if d.Accounts != nil {
 		h.Accounts = httpapi.NewAccountsHandler(d.Accounts)

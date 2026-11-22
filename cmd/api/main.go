@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 	_ "time/tzdata" // zonas horarias embebidas: el contenedor no trae la base del sistema
@@ -15,11 +16,13 @@ import (
 
 	"github.com/lea/mediplan-api/internal/adapter/brevo"
 	"github.com/lea/mediplan-api/internal/adapter/firebase"
+	"github.com/lea/mediplan-api/internal/adapter/mercadopago"
 	"github.com/lea/mediplan-api/internal/app"
 	"github.com/lea/mediplan-api/internal/config"
 	"github.com/lea/mediplan-api/internal/platform/mail"
 	"github.com/lea/mediplan-api/internal/platform/push"
 	"github.com/lea/mediplan-api/internal/usecase/accounts"
+	"github.com/lea/mediplan-api/internal/usecase/billing"
 	"github.com/lea/mediplan-api/internal/usecase/notifications"
 )
 
@@ -76,9 +79,25 @@ func main() {
 		log.Printf("correos propios deshabilitados (faltan BREVO_API_KEY, MAIL_FROM, WEB_BASE_URL o FIREBASE_CREDENTIALS_JSON): se usa el correo estándar de Firebase")
 	}
 
+	// Pagos reales con Mercado Pago: hace falta el Access Token y la URL de la web (adónde vuelve la persona al pagar).
+	var payments *app.PaymentsDeps
+	if cfg.MPAccessToken != "" && cfg.WebBaseURL != "" {
+		pcfg := billing.PaymentsConfig{PriceARS: cfg.PriceARS, BackURL: strings.TrimRight(cfg.WebBaseURL, "/") + "/planes/"}
+		if cfg.APIPublicURL != "" {
+			pcfg.NotificationURL = cfg.APIPublicURL + "/api/v1/webhooks/mercadopago"
+		}
+		if cfg.MPWebhookSecret == "" {
+			log.Printf("MP_WEBHOOK_SECRET vacío: los avisos de pago no se validan por firma (igual se verifican consultando a Mercado Pago)")
+		}
+		payments = &app.PaymentsDeps{Gateway: mercadopago.New(cfg.MPAccessToken), Config: pcfg, WebhookSecret: cfg.MPWebhookSecret}
+		log.Printf("pagos con Mercado Pago habilitados (Premium: $%d ARS/mes)", cfg.PriceARS)
+	} else {
+		log.Printf("pagos deshabilitados (faltan MP_ACCESS_TOKEN o WEB_BASE_URL): todas las cuentas son gratis")
+	}
+
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           app.NewHandler(app.Deps{Pool: pool, Verifier: verifier, Pusher: pusher, JobSecret: cfg.JobSecret, AllowedOrigins: cfg.WebOrigins, Accounts: accountsSvc}),
+		Handler:           app.NewHandler(app.Deps{Pool: pool, Verifier: verifier, Pusher: pusher, JobSecret: cfg.JobSecret, AllowedOrigins: cfg.WebOrigins, Accounts: accountsSvc, Payments: payments}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {

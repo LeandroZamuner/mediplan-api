@@ -42,4 +42,8 @@ var (
 	ErrTooManyRequests = errors.New("demasiados pedidos: esperá un minuto y probá de nuevo")
 	// ErrMailUnavailable: no se pudo preparar o enviar el correo (el cliente puede usar el correo estándar de Firebase).
 	ErrMailUnavailable = errors.New("no pudimos enviar el correo ahora")
+	// Pagos: la integración puede no estar configurada, el medio de pago puede fallar o la persona ya ser Premium.
+	ErrPaymentsDisabled   = errors.New("los pagos todavía no están habilitados")
+	ErrPaymentUnavailable = errors.New("no pudimos comunicarnos con Mercado Pago, probá de nuevo en unos minutos")
+	ErrAlreadyPremium     = errors.New("ya sos Premium: tu suscripción sigue vigente")
 )

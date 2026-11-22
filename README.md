@@ -73,6 +73,28 @@ ni se bloquea la edición de lo que ya existe.
 - Una suscripción activa con el período vencido hace menos de 3 días sigue siendo Premium (cobro demorado); una cancelada
   lo es hasta que termina el período pagado.
 
+## Pago de Premium con Mercado Pago
+
+Premium se cobra con una **suscripción mensual de Mercado Pago** (pesos argentinos). La cuenta **sigue siendo gratis hasta que el pago se confirma**.
+
+| Ruta | Qué hace |
+|---|---|
+| `POST /api/v1/me/subscription/checkout` | Crea la suscripción pendiente y devuelve `{checkoutUrl}` para pagar. Acepta `{"payerEmail"}` (correo de la cuenta de Mercado Pago de quien paga). `409` si ya es Premium. |
+| `POST /api/v1/me/subscription/sync` | La app lo llama al volver de pagar: consulta a Mercado Pago y devuelve el estado. |
+| `DELETE /api/v1/me/subscription` | Baja: deja de renovarse y sigue Premium hasta el fin del período pagado. |
+| `POST /api/v1/webhooks/mercadopago` | Aviso de Mercado Pago (público). Se valida la firma `x-signature` y **además** se consulta el estado real a Mercado Pago: un aviso falso no puede dar Premium. |
+| `GET /api/v1/me/subscription` | Suma `pending` (pago iniciado sin confirmar) y `payments: {enabled, priceArs, currency, period}`. Si hay algo pendiente o el período está por vencer, se actualiza solo desde Mercado Pago. |
+
+Variables de entorno (en el hosting, nunca en el repo):
+
+| Variable | Para qué |
+|---|---|
+| `MP_ACCESS_TOKEN` | Access Token de **producción** de la aplicación de Mercado Pago (secreto). Sin él, los pagos quedan deshabilitados. |
+| `MP_WEBHOOK_SECRET` | Clave secreta de los webhooks (secreto). |
+| `PREMIUM_PRICE_ARS` | Precio mensual en pesos (por defecto 2999). |
+| `API_PUBLIC_URL` | URL pública de esta API para los avisos (en Render se toma sola de `RENDER_EXTERNAL_URL`). |
+| `WEB_BASE_URL` | Ya existente: a esa web vuelve la persona después de pagar (`/planes/`). |
+
 ## Migraciones
 
 Los archivos de `migrations/` se aplican **en orden** (`001`, `002`, …) y son idempotentes desde la 002. En una base ya creada alcanza con aplicar

@@ -2,6 +2,9 @@ package app
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,7 +16,9 @@ import (
 	"time"
 
 	"github.com/lea/mediplan-api/internal/adapter/postgres/postgrestest"
+	"github.com/lea/mediplan-api/internal/domain"
 	"github.com/lea/mediplan-api/internal/usecase/auth"
+	"github.com/lea/mediplan-api/internal/usecase/billing"
 	"github.com/lea/mediplan-api/internal/usecase/notifications"
 )
 
@@ -626,6 +631,110 @@ func TestFreemiumEndToEnd(t *testing.T) {
 		code, body = call(h, "GET", "/api/v1/me/subscription", "ana", "")
 		if code != 200 || field(t, body, "tier") != "premium" {
 			t.Fatalf("estado Premium inesperado: %d %s", code, body)
+		}
+	})
+}
+
+// fakeMP hace de Mercado Pago: guarda las suscripciones y deja "pagar" desde el test.
+type fakeMP struct {
+	subs map[string]*billing.Preapproval
+}
+
+func (f *fakeMP) Create(_ context.Context, p billing.CreateParams) (*billing.Preapproval, error) {
+	pa := &billing.Preapproval{ID: fmt.Sprintf("pre-%d", len(f.subs)+1), Status: "pending", ExternalReference: p.ExternalReference, InitPoint: "https://mp.test/pagar", AmountARS: float64(p.AmountARS)}
+	f.subs[pa.ID] = pa
+	return pa, nil
+}
+func (f *fakeMP) Get(_ context.Context, id string) (*billing.Preapproval, error) {
+	if pa, ok := f.subs[id]; ok {
+		c := *pa
+		return &c, nil
+	}
+	return nil, domain.ErrNotFound
+}
+func (f *fakeMP) AuthorizedPaymentSubscription(context.Context, string) (string, error) {
+	return "", domain.ErrNotFound
+}
+func (f *fakeMP) Cancel(_ context.Context, id string) error {
+	f.subs[id].Status = "cancelled"
+	return nil
+}
+
+func TestMercadoPagoEndToEnd(t *testing.T) {
+	t.Run("dada la API real, cuando Ana paga su suscripción, entonces es Premium recién cuando el pago se confirma y puede darse de baja", func(t *testing.T) {
+		// Given: API con Mercado Pago simulado y Ana (gratis, con el tope de planes alcanzado)
+		pool := postgrestest.Setup(t)
+		mp := &fakeMP{subs: map[string]*billing.Preapproval{}}
+		const secret = "clave-del-webhook"
+		h := NewHandler(Deps{Pool: pool, Verifier: fakeVerifier{}, Payments: &PaymentsDeps{Gateway: mp, WebhookSecret: secret, Config: billing.PaymentsConfig{PriceARS: 2999, BackURL: "https://web/planes/"}}})
+		if code, b := call(h, "POST", "/api/v1/auth/register", "ana", `{"role":"patient"}`); code != 200 {
+			t.Fatalf("registro: %d %s", code, b)
+		}
+		plan := `{"name":"%s","medications":[{"name":"a","dose":"10 mg","startDate":"2026-11-01","schedules":[{"dayOfWeek":1,"timeOfDay":"08:00"}]}]}`
+		if code, b := call(h, "POST", "/api/v1/plans", "ana", fmt.Sprintf(plan, "Uno")); code != 201 && code != 200 {
+			t.Fatalf("primer plan: %d %s", code, b)
+		}
+		if code, _ := call(h, "POST", "/api/v1/plans", "ana", fmt.Sprintf(plan, "Dos")); code != 402 {
+			t.Fatalf("el segundo plan debía dar 402, dio %d", code)
+		}
+		code, body := call(h, "GET", "/api/v1/me/subscription", "ana", "")
+		if code != 200 || !strings.Contains(string(body), `"priceArs":2999`) || !strings.Contains(string(body), `"enabled":true`) {
+			t.Fatalf("estado inicial: %d %s", code, body)
+		}
+
+		// When: pide pagar
+		code, body = call(h, "POST", "/api/v1/me/subscription/checkout", "ana", "")
+		if code != 200 || field(t, body, "checkoutUrl") != "https://mp.test/pagar" {
+			t.Fatalf("checkout: %d %s", code, body)
+		}
+		// Then: con el pago pendiente sigue siendo gratis (y figura pendiente)
+		code, body = call(h, "GET", "/api/v1/me/subscription", "ana", "")
+		if field(t, body, "tier") != "free" || !strings.Contains(string(body), `"pending":true`) {
+			t.Fatalf("pendiente: %d %s", code, body)
+		}
+		if code, _ := call(h, "POST", "/api/v1/plans", "ana", fmt.Sprintf(plan, "Dos")); code != 402 {
+			t.Fatalf("sin pago confirmado no debe dejar crear: %d", code)
+		}
+
+		// When: llega un aviso con firma falsa, entonces se rechaza y no pasa nada
+		webhook := func(sig string) int {
+			req := httptest.NewRequest("POST", "/api/v1/webhooks/mercadopago?data.id=pre-1&type=subscription_preapproval", strings.NewReader(`{}`))
+			req.Header.Set("x-request-id", "req-1")
+			req.Header.Set("x-signature", sig)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+			return w.Code
+		}
+		next := time.Now().AddDate(0, 1, 0)
+		mp.subs["pre-1"].Status, mp.subs["pre-1"].NextPaymentDate = "authorized", &next
+		if c := webhook("ts=1,v1=00ff"); c != 401 {
+			t.Fatalf("firma falsa: esperaba 401 y fue %d", c)
+		}
+		// When: llega el aviso con la firma correcta
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write([]byte("id:pre-1;request-id:req-1;ts:1700000000;"))
+		if c := webhook("ts=1700000000,v1=" + hex.EncodeToString(mac.Sum(nil))); c != 200 {
+			t.Fatalf("firma buena: esperaba 200 y fue %d", c)
+		}
+		// Then: es Premium y puede crear sin tope
+		code, body = call(h, "GET", "/api/v1/me/subscription", "ana", "")
+		if field(t, body, "tier") != "premium" || strings.Contains(string(body), `"pending":true`) {
+			t.Fatalf("Premium: %d %s", code, body)
+		}
+		if code, b := call(h, "POST", "/api/v1/plans", "ana", fmt.Sprintf(plan, "Dos")); code != 201 && code != 200 {
+			t.Fatalf("con Premium debía crear: %d %s", code, b)
+		}
+		if code, _ := call(h, "POST", "/api/v1/me/subscription/checkout", "ana", ""); code != 409 {
+			t.Fatalf("siendo Premium, pagar de nuevo debía dar 409 y dio %d", code)
+		}
+
+		// When: se da de baja
+		code, body = call(h, "DELETE", "/api/v1/me/subscription", "ana", "")
+		if code != 200 || field(t, body, "tier") != "premium" || !strings.Contains(string(body), `"cancelled":true`) {
+			t.Fatalf("baja: %d %s", code, body)
+		}
+		if mp.subs["pre-1"].Status != "cancelled" {
+			t.Fatal("debía cancelarse en Mercado Pago")
 		}
 	})
 }

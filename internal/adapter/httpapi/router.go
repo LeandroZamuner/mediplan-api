@@ -43,6 +43,9 @@ func NewRouter(h Handlers) http.Handler {
 			r.Post("/auth/password-reset", h.Accounts.PasswordReset)         // público: uniforme y con límite de pedidos
 			r.Post("/auth/email-verification", h.Accounts.EmailVerification) // token válido aunque el correo no esté verificado
 		}
+		if h.Billing != nil && h.Billing.pay != nil {
+			r.Post("/webhooks/mercadopago", h.Billing.MercadoPagoWebhook) // público: lo llama Mercado Pago (con firma)
+		}
 		if cgH != nil {
 			// Público: la página del enlace de invitación muestra el nombre del plan sin sesión.
 			r.Get("/invitations/preview", cgH.Preview)
@@ -55,6 +58,9 @@ func NewRouter(h Handlers) http.Handler {
 			r.Delete("/me", authH.DeleteMe)
 			if h.Billing != nil {
 				r.Get("/me/subscription", h.Billing.Subscription)
+				r.Post("/me/subscription/checkout", h.Billing.Checkout)
+				r.Post("/me/subscription/sync", h.Billing.Sync)
+				r.Delete("/me/subscription", h.Billing.Cancel)
 			}
 
 			if plansH != nil {

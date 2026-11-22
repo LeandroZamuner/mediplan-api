@@ -80,6 +80,7 @@ type Status struct {
 	ActivePlans      int
 	Medications      int
 	Cancelled        bool // Premium que ya no se renueva
+	Pending          bool // empezó a suscribirse pero el pago todavía no se confirmó
 	CurrentPeriodEnd *time.Time
 }
 
@@ -95,6 +96,9 @@ func (s *Service) Status(ctx context.Context, userID string) (*Status, error) {
 			st.Cancelled = sub.Status == domain.SubCancelled
 			st.CurrentPeriodEnd = sub.CurrentPeriodEnd
 		}
+	}
+	if sub != nil && sub.Tier != domain.TierPremium && sub.ProviderRef != "" {
+		st.Pending = true
 	}
 	st.Limits = domain.LimitsFor(st.Tier)
 	if st.ActivePlans, st.Medications, err = s.usage.Usage(ctx, userID); err != nil {

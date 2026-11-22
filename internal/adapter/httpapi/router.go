@@ -18,6 +18,7 @@ type Handlers struct {
 	Stock         *StockHandler
 	Jobs          *JobsHandler
 	Billing       *BillingHandler  // nivel gratis/Premium y topes
+	AI            *AIHandler       // preferencias de IA/correos y asistente; nil = no se publican
 	Accounts      *AccountsHandler // correos de cuenta con diseño propio; nil = no se publican (los clientes usan el correo de Firebase)
 	// AllowedOrigins son los sitios web que pueden llamar a la API desde el navegador (CORS). Vacío = apagado.
 	AllowedOrigins []string
@@ -35,6 +36,9 @@ func NewRouter(h Handlers) http.Handler {
 	if h.Jobs != nil {
 		// Lo llama Cloud Scheduler con un secreto compartido; no pasa por la sesión de usuario.
 		r.Post("/internal/jobs/missed-doses", h.Jobs.MissedDoses)
+		if h.Jobs.reports != nil {
+			r.Post("/internal/jobs/weekly-reports", h.Jobs.WeeklyReports)
+		}
 	}
 
 	r.Route("/api/v1", func(r chi.Router) {
@@ -56,6 +60,13 @@ func NewRouter(h Handlers) http.Handler {
 			r.Get("/me", authH.Me)
 			r.Patch("/me", authH.UpdateMe)
 			r.Delete("/me", authH.DeleteMe)
+			if h.AI != nil {
+				r.Get("/me/preferences", h.AI.GetPreferences)
+				r.Put("/me/preferences", h.AI.SetPreferences)
+				if h.AI.chat != nil {
+					r.Post("/assistant/chat", h.AI.Chat)
+				}
+			}
 			if h.Billing != nil {
 				r.Get("/me/subscription", h.Billing.Subscription)
 				r.Post("/me/subscription/checkout", h.Billing.Checkout)

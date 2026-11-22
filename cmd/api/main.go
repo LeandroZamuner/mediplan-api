@@ -16,12 +16,14 @@ import (
 
 	"github.com/lea/mediplan-api/internal/adapter/brevo"
 	"github.com/lea/mediplan-api/internal/adapter/firebase"
+	"github.com/lea/mediplan-api/internal/adapter/gemini"
 	"github.com/lea/mediplan-api/internal/adapter/mercadopago"
 	"github.com/lea/mediplan-api/internal/app"
 	"github.com/lea/mediplan-api/internal/config"
 	"github.com/lea/mediplan-api/internal/platform/mail"
 	"github.com/lea/mediplan-api/internal/platform/push"
 	"github.com/lea/mediplan-api/internal/usecase/accounts"
+	"github.com/lea/mediplan-api/internal/usecase/ai"
 	"github.com/lea/mediplan-api/internal/usecase/billing"
 	"github.com/lea/mediplan-api/internal/usecase/notifications"
 )
@@ -95,9 +97,18 @@ func main() {
 		log.Printf("pagos deshabilitados (faltan MP_ACCESS_TOKEN o WEB_BASE_URL): todas las cuentas son gratis")
 	}
 
+	// IA: asistente y resumen semanal con Google Gemini (clave de AI Studio). Sin clave no hay asistente.
+	var llm ai.LLM
+	if cfg.GeminiAPIKey != "" {
+		llm = gemini.New(cfg.GeminiAPIKey, cfg.GeminiModel)
+		log.Printf("IA habilitada (modelo %s)", cfg.GeminiModel)
+	} else {
+		log.Printf("IA deshabilitada (falta GEMINI_API_KEY): sin asistente y el resumen semanal usa texto fijo")
+	}
+
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           app.NewHandler(app.Deps{Pool: pool, Verifier: verifier, Pusher: pusher, JobSecret: cfg.JobSecret, AllowedOrigins: cfg.WebOrigins, Accounts: accountsSvc, Payments: payments}),
+		Handler:           app.NewHandler(app.Deps{Pool: pool, Verifier: verifier, Pusher: pusher, JobSecret: cfg.JobSecret, AllowedOrigins: cfg.WebOrigins, Accounts: accountsSvc, Payments: payments, LLM: llm, ReportMailer: mailer, WebBaseURL: cfg.WebBaseURL}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {

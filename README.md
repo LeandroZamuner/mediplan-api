@@ -95,6 +95,21 @@ Variables de entorno (en el hosting, nunca en el repo):
 | `API_PUBLIC_URL` | URL pública de esta API para los avisos (en Render se toma sola de `RENDER_EXTERNAL_URL`). |
 | `WEB_BASE_URL` | Ya existente: a esa web vuelve la persona después de pagar (`/premium/`). |
 
+## Inteligencia artificial: resumen semanal y asistente (Premium)
+
+Dos funciones Premium con **Google Gemini** (plan gratuito de AI Studio). Ambas son opcionales y requieren que la persona las **acepte** (`PUT /me/preferences`, todo apagado por defecto).
+
+- **Resumen semanal por correo** (`POST /internal/jobs/weekly-reports`, lo llama el workflow `weekly-reports.yml` los lunes). Solo a cuentas Premium con correo verificado que lo activaron; no se repite en la misma semana. El texto lo redacta la IA **solo si la persona aceptó**, y el modelo recibe **únicamente números anónimos** (cumplimiento, día con más omisiones, cantidad de stock bajo): ni nombre, ni correo, ni medicamentos. Si la IA falla o no está configurada, el correo sale con un texto fijo.
+- **Asistente** (`POST /api/v1/assistant/chat`): responde sobre el tratamiento de quien pregunta mediante herramientas de **solo lectura** (`get_plans`, `get_doses`, `get_adherence`) sobre sus propios datos. No diagnostica, no indica dosis ni cambios; ante emergencias deriva al 107/911. Límites: 6 mensajes por minuto y 60 por día por persona. **No se guardan las conversaciones**: la app reenvía el historial en cada pedido.
+- `GET/PUT /me/preferences`: `{weeklyReport, aiConsent}` (+ `assistantAvailable` en la respuesta). Errores propios: `402 premium_required` y `403 ai_consent_required`.
+
+| Variable | Para qué |
+|---|---|
+| `GEMINI_API_KEY` | Clave de Google AI Studio (secreto). Sin ella no hay asistente y el resumen usa texto fijo. |
+| `GEMINI_MODEL` | Modelo a usar (por defecto `gemini-3.5-flash-lite`). Google renueva los nombres seguido: si falla, revisar la lista en AI Studio. |
+
+Importante: en el plan gratuito de Gemini, Google puede usar el contenido enviado para mejorar sus productos. Por eso solo se envían datos mínimos y anónimos, y solo con consentimiento.
+
 ## Migraciones
 
 Los archivos de `migrations/` se aplican **en orden** (`001`, `002`, …) y son idempotentes desde la 002. En una base ya creada alcanza con aplicar

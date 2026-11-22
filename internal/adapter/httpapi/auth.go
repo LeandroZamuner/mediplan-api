@@ -102,6 +102,16 @@ func writeError(w http.ResponseWriter, err error) {
 	}
 	status, msg := http.StatusInternalServerError, "error interno"
 	switch {
+	case errors.Is(err, domain.ErrPremiumRequired):
+		writeJSON(w, http.StatusPaymentRequired, map[string]any{"error": err.Error(), "code": "premium_required"})
+		return
+	case errors.Is(err, domain.ErrConsentRequired):
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": err.Error(), "code": "ai_consent_required"})
+		return
+	case errors.Is(err, domain.ErrInvalidMessage):
+		status, msg = http.StatusUnprocessableEntity, err.Error()
+	case errors.Is(err, domain.ErrAIUnavailable):
+		status, msg = http.StatusServiceUnavailable, err.Error()
 	case errors.Is(err, domain.ErrInvalidToken):
 		status, msg = http.StatusUnauthorized, err.Error()
 	case errors.Is(err, domain.ErrEmailNotVerified):

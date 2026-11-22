@@ -14,6 +14,8 @@ import (
 	"github.com/lea/mediplan-api/internal/platform/push"
 	"github.com/lea/mediplan-api/internal/platform/token"
 	"github.com/lea/mediplan-api/internal/usecase/accounts"
+	"github.com/lea/mediplan-api/internal/usecase/ai"
+	"github.com/lea/mediplan-api/internal/usecase/assistant"
 	"github.com/lea/mediplan-api/internal/usecase/auth"
 	"github.com/lea/mediplan-api/internal/usecase/billing"
 	"github.com/lea/mediplan-api/internal/usecase/caregivers"
@@ -21,6 +23,7 @@ import (
 	"github.com/lea/mediplan-api/internal/usecase/notifications"
 	"github.com/lea/mediplan-api/internal/usecase/plans"
 	"github.com/lea/mediplan-api/internal/usecase/reminders"
+	"github.com/lea/mediplan-api/internal/usecase/reports"
 	"github.com/lea/mediplan-api/internal/usecase/stock"
 )
 
@@ -35,6 +38,11 @@ type Deps struct {
 	AllowedOrigins []string
 	// Accounts habilita los correos de cuenta con diseño propio. nil = rutas no publicadas.
 	Accounts *accounts.Service
+	// LLM habilita el asistente y el texto con IA del resumen semanal. nil = sin IA (el resumen usa texto fijo).
+	LLM ai.LLM
+	// ReportMailer y WebBaseURL habilitan el resumen semanal por correo. nil/vacío = sin resumen.
+	ReportMailer accounts.Mailer
+	WebBaseURL   string
 	// Payments habilita el cobro de Premium con Mercado Pago. nil = nadie puede pagar (todas las cuentas son gratis).
 	Payments *PaymentsDeps
 }
@@ -70,7 +78,14 @@ func NewHandler(d Deps) http.Handler {
 	dosesSvc := doses.NewService(plansSvc, users, doseRepo) // plansSvc decide quién ve el plan
 	dosesSvc.SetStock(stockSvc)                             // cada toma descuenta una unidad
 
+	prefsRepo := postgres.NewPrefsRepo(d.Pool)
+	var chat *assistant.Service
+	if d.LLM != nil {
+		chat = assistant.NewService(plansSvc, dosesSvc, billingSvc, prefsRepo, d.LLM)
+	}
+
 	h := httpapi.Handlers{
+		AI:             httpapi.NewAIHandler(prefsRepo, billingSvc, chat),
 		AllowedOrigins: d.AllowedOrigins,
 		Auth:           httpapi.NewAuthHandler(auth.NewService(d.Verifier, users)),
 		Plans:          httpapi.NewPlansHandler(plansSvc),
@@ -88,6 +103,9 @@ func NewHandler(d Deps) http.Handler {
 	}
 	if d.JobSecret != "" {
 		h.Jobs = httpapi.NewJobsHandler(d.JobSecret, reminders.NewService(postgres.NewReminderRepo(d.Pool), doseRepo, notifSvc))
+		if d.ReportMailer != nil && d.WebBaseURL != "" {
+			h.Jobs.WithReports(reports.NewService(prefsRepo, plansSvc, dosesSvc, billingSvc, d.ReportMailer, d.LLM, d.WebBaseURL))
+		}
 	}
 	return httpapi.NewRouter(h)
 }

@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -29,6 +30,19 @@ type Config struct {
 	BrevoAPIKey  string
 	MailFrom     string
 	MailFromName string
+
+	// Pagos con Mercado Pago. Sin MPAccessToken (o sin WebBaseURL) los pagos quedan deshabilitados.
+	// MPAccessToken: Access Token de PRODUCCIÓN (SECRETO). MPWebhookSecret: clave que firma los avisos (SECRETO).
+	MPAccessToken   string
+	MPWebhookSecret string
+	// PriceARS: precio mensual de Premium en pesos.
+	PriceARS int
+	// IA (Google Gemini). Sin GeminiAPIKey no hay asistente y el resumen semanal usa texto fijo.
+	// GeminiAPIKey: clave de Google AI Studio (SECRETO). GeminiModel: nombre del modelo (Google los renueva seguido).
+	GeminiAPIKey string
+	GeminiModel  string
+	// APIPublicURL: dirección pública de esta API (para que Mercado Pago avise cada cobro). En Render se toma sola.
+	APIPublicURL string
 }
 
 func Load() Config {
@@ -44,6 +58,12 @@ func Load() Config {
 		BrevoAPIKey:         os.Getenv("BREVO_API_KEY"),
 		MailFrom:            os.Getenv("MAIL_FROM"),
 		MailFromName:        get("MAIL_FROM_NAME", "MediPlan"),
+		MPAccessToken:       os.Getenv("MP_ACCESS_TOKEN"),
+		MPWebhookSecret:     os.Getenv("MP_WEBHOOK_SECRET"),
+		PriceARS:            atoi(get("PREMIUM_PRICE_ARS", "2999"), 2999),
+		GeminiAPIKey:        os.Getenv("GEMINI_API_KEY"),
+		GeminiModel:         get("GEMINI_MODEL", "gemini-3.5-flash-lite"),
+		APIPublicURL:        strings.TrimRight(get("API_PUBLIC_URL", os.Getenv("RENDER_EXTERNAL_URL")), "/"),
 	}
 }
 
@@ -52,6 +72,14 @@ func get(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func atoi(v string, fallback int) int {
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n <= 0 {
+		return fallback
+	}
+	return n
 }
 
 func splitList(v string) []string {

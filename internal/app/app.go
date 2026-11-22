@@ -14,12 +14,16 @@ import (
 	"github.com/lea/mediplan-api/internal/platform/push"
 	"github.com/lea/mediplan-api/internal/platform/token"
 	"github.com/lea/mediplan-api/internal/usecase/accounts"
+	"github.com/lea/mediplan-api/internal/usecase/ai"
+	"github.com/lea/mediplan-api/internal/usecase/assistant"
 	"github.com/lea/mediplan-api/internal/usecase/auth"
+	"github.com/lea/mediplan-api/internal/usecase/billing"
 	"github.com/lea/mediplan-api/internal/usecase/caregivers"
 	"github.com/lea/mediplan-api/internal/usecase/doses"
 	"github.com/lea/mediplan-api/internal/usecase/notifications"
 	"github.com/lea/mediplan-api/internal/usecase/plans"
 	"github.com/lea/mediplan-api/internal/usecase/reminders"
+	"github.com/lea/mediplan-api/internal/usecase/reports"
 	"github.com/lea/mediplan-api/internal/usecase/stock"
 )
 
@@ -34,6 +38,20 @@ type Deps struct {
 	AllowedOrigins []string
 	// Accounts habilita los correos de cuenta con diseño propio. nil = rutas no publicadas.
 	Accounts *accounts.Service
+	// LLM habilita el asistente y el texto con IA del resumen semanal. nil = sin IA (el resumen usa texto fijo).
+	LLM ai.LLM
+	// ReportMailer y WebBaseURL habilitan el resumen semanal por correo. nil/vacío = sin resumen.
+	ReportMailer accounts.Mailer
+	WebBaseURL   string
+	// Payments habilita el cobro de Premium con Mercado Pago. nil = nadie puede pagar (todas las cuentas son gratis).
+	Payments *PaymentsDeps
+}
+
+// PaymentsDeps: el medio de pago, el precio y la clave que firma los avisos.
+type PaymentsDeps struct {
+	Gateway       billing.Gateway
+	Config        billing.PaymentsConfig
+	WebhookSecret string
 }
 
 func NewHandler(d Deps) http.Handler {
@@ -48,26 +66,46 @@ func NewHandler(d Deps) http.Handler {
 	notifSvc := notifications.NewService(postgres.NewDeviceRepo(d.Pool), postgres.NewNotificationRepo(d.Pool), d.Pusher)
 
 	plansSvc := plans.NewService(planRepo, links)
+	// Nivel gratis/Premium: la suscripción vive en la base; los topes solo frenan crear planes, medicamentos y cuidadores.
+	subRepo := postgres.NewSubscriptionRepo(d.Pool)
+	billingSvc := billing.NewService(subRepo, plansSvc)
+	plansSvc.SetLimits(billingSvc)
+	caregiversSvc := caregivers.NewService(links, planRepo, token.Generator{})
+	caregiversSvc.SetLimits(billingSvc)
 	plansSvc.SetSyncer(planSyncer{notifSvc}) // los cambios de horarios llegan a los celulares para reprogramar alarmas
 
 	stockSvc := stock.NewService(postgres.NewStockRepo(d.Pool), plansSvc, participants{links}, notifSvc)
 	dosesSvc := doses.NewService(plansSvc, users, doseRepo) // plansSvc decide quién ve el plan
 	dosesSvc.SetStock(stockSvc)                             // cada toma descuenta una unidad
 
+	prefsRepo := postgres.NewPrefsRepo(d.Pool)
+	var chat *assistant.Service
+	if d.LLM != nil {
+		chat = assistant.NewService(plansSvc, dosesSvc, billingSvc, prefsRepo, d.LLM)
+	}
+
 	h := httpapi.Handlers{
+		AI:             httpapi.NewAIHandler(prefsRepo, billingSvc, chat),
 		AllowedOrigins: d.AllowedOrigins,
 		Auth:           httpapi.NewAuthHandler(auth.NewService(d.Verifier, users)),
 		Plans:          httpapi.NewPlansHandler(plansSvc),
-		Caregivers:     httpapi.NewCaregiversHandler(caregivers.NewService(links, planRepo, token.Generator{})),
+		Caregivers:     httpapi.NewCaregiversHandler(caregiversSvc),
 		Doses:          httpapi.NewDosesHandler(dosesSvc),
 		Stock:          httpapi.NewStockHandler(stockSvc),
 		Notifications:  httpapi.NewNotificationsHandler(notifSvc),
+		Billing:        httpapi.NewBillingHandler(billingSvc),
+	}
+	if d.Payments != nil {
+		h.Billing.WithPayments(billing.NewPayments(billingSvc, subRepo, d.Payments.Gateway, d.Payments.Config), d.Payments.WebhookSecret)
 	}
 	if d.Accounts != nil {
 		h.Accounts = httpapi.NewAccountsHandler(d.Accounts)
 	}
 	if d.JobSecret != "" {
 		h.Jobs = httpapi.NewJobsHandler(d.JobSecret, reminders.NewService(postgres.NewReminderRepo(d.Pool), doseRepo, notifSvc))
+		if d.ReportMailer != nil && d.WebBaseURL != "" {
+			h.Jobs.WithReports(reports.NewService(prefsRepo, plansSvc, dosesSvc, billingSvc, d.ReportMailer, d.LLM, d.WebBaseURL))
+		}
 	}
 	return httpapi.NewRouter(h)
 }

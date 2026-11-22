@@ -2,6 +2,9 @@ package app
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,7 +16,11 @@ import (
 	"time"
 
 	"github.com/lea/mediplan-api/internal/adapter/postgres/postgrestest"
+	"github.com/lea/mediplan-api/internal/domain"
+	"github.com/lea/mediplan-api/internal/usecase/accounts"
+	"github.com/lea/mediplan-api/internal/usecase/ai"
 	"github.com/lea/mediplan-api/internal/usecase/auth"
+	"github.com/lea/mediplan-api/internal/usecase/billing"
 	"github.com/lea/mediplan-api/internal/usecase/notifications"
 )
 
@@ -576,6 +583,248 @@ func TestPatchKeepsStockEndToEnd(t *testing.T) {
 		}
 		if code, _ := call(f.h, "PATCH", path, "ana", `{"dose":"1 mg"}`); code != 403 {
 			t.Errorf("la paciente con cuidadora no edita: %d", code)
+		}
+	})
+}
+
+func TestFreemiumEndToEnd(t *testing.T) {
+	t.Run("dada la API real, cuando una cuenta gratis supera los topes, entonces recibe 402 y al pasar a Premium puede crear sin límite", func(t *testing.T) {
+		// Given: API sobre Postgres y Ana, registrada como paciente
+		pool := postgrestest.Setup(t)
+		h := NewHandler(Deps{Pool: pool, Verifier: fakeVerifier{}})
+		if code, b := call(h, "POST", "/api/v1/auth/register", "ana", `{"role":"patient"}`); code != 200 {
+			t.Fatalf("registro: %d %s", code, b)
+		}
+		med := func(n string) string {
+			return `{"name":"` + n + `","dose":"10 mg","startDate":"2026-11-01","schedules":[{"dayOfWeek":1,"timeOfDay":"08:00"}]}`
+		}
+		fourMeds := `{"name":"Grande","medications":[` + med("a") + `,` + med("b") + `,` + med("c") + `,` + med("d") + `]}`
+
+		// When/Then: un plan con 4 medicamentos supera el tope gratis
+		code, body := call(h, "POST", "/api/v1/plans", "ana", fourMeds)
+		if code != 402 || field(t, body, "code") != "plan_limit" || field(t, body, "resource") != "medications" {
+			t.Fatalf("esperaba 402 por medicamentos y fue %d %s", code, body)
+		}
+		// Un plan con 3 entra; un segundo plan activo no
+		threeMeds := `{"name":"Uno","medications":[` + med("a") + `,` + med("b") + `,` + med("c") + `]}`
+		if code, b := call(h, "POST", "/api/v1/plans", "ana", threeMeds); code != 201 && code != 200 {
+			t.Fatalf("el plan de 3 debía crearse: %d %s", code, b)
+		}
+		code, body = call(h, "POST", "/api/v1/plans", "ana", `{"name":"Otro","medications":[`+med("z")+`]}`)
+		if code != 402 || field(t, body, "resource") != "plans" {
+			t.Fatalf("esperaba 402 por planes y fue %d %s", code, body)
+		}
+		// Su estado lo refleja
+		code, body = call(h, "GET", "/api/v1/me/subscription", "ana", "")
+		if code != 200 || field(t, body, "tier") != "free" {
+			t.Fatalf("estado gratis inesperado: %d %s", code, body)
+		}
+
+		// When: pasa a Premium (lo hará la integración de pago; acá se carga la suscripción directo)
+		if _, err := pool.Exec(context.Background(),
+			`INSERT INTO subscriptions (user_id, tier, status, current_period_end) SELECT id, 'premium', 'active', now() + interval '30 days' FROM users WHERE email = 'ana@mail.com'`); err != nil {
+			t.Fatal(err)
+		}
+
+		// Then: ya no hay topes y el estado lo dice
+		if code, b := call(h, "POST", "/api/v1/plans", "ana", `{"name":"Otro","medications":[`+med("z")+`]}`); code != 201 && code != 200 {
+			t.Fatalf("con Premium debía crearse: %d %s", code, b)
+		}
+		code, body = call(h, "GET", "/api/v1/me/subscription", "ana", "")
+		if code != 200 || field(t, body, "tier") != "premium" {
+			t.Fatalf("estado Premium inesperado: %d %s", code, body)
+		}
+	})
+}
+
+// fakeMP hace de Mercado Pago: guarda las suscripciones y deja "pagar" desde el test.
+type fakeMP struct {
+	subs map[string]*billing.Preapproval
+}
+
+func (f *fakeMP) Create(_ context.Context, p billing.CreateParams) (*billing.Preapproval, error) {
+	pa := &billing.Preapproval{ID: fmt.Sprintf("pre-%d", len(f.subs)+1), Status: "pending", ExternalReference: p.ExternalReference, InitPoint: "https://mp.test/pagar", AmountARS: float64(p.AmountARS)}
+	f.subs[pa.ID] = pa
+	return pa, nil
+}
+func (f *fakeMP) Get(_ context.Context, id string) (*billing.Preapproval, error) {
+	if pa, ok := f.subs[id]; ok {
+		c := *pa
+		return &c, nil
+	}
+	return nil, domain.ErrNotFound
+}
+func (f *fakeMP) AuthorizedPaymentSubscription(context.Context, string) (string, error) {
+	return "", domain.ErrNotFound
+}
+func (f *fakeMP) Cancel(_ context.Context, id string) error {
+	f.subs[id].Status = "cancelled"
+	return nil
+}
+
+func TestMercadoPagoEndToEnd(t *testing.T) {
+	t.Run("dada la API real, cuando Ana paga su suscripción, entonces es Premium recién cuando el pago se confirma y puede darse de baja", func(t *testing.T) {
+		// Given: API con Mercado Pago simulado y Ana (gratis, con el tope de planes alcanzado)
+		pool := postgrestest.Setup(t)
+		mp := &fakeMP{subs: map[string]*billing.Preapproval{}}
+		const secret = "clave-del-webhook"
+		h := NewHandler(Deps{Pool: pool, Verifier: fakeVerifier{}, Payments: &PaymentsDeps{Gateway: mp, WebhookSecret: secret, Config: billing.PaymentsConfig{PriceARS: 2999, BackURL: "https://web/planes/"}}})
+		if code, b := call(h, "POST", "/api/v1/auth/register", "ana", `{"role":"patient"}`); code != 200 {
+			t.Fatalf("registro: %d %s", code, b)
+		}
+		plan := `{"name":"%s","medications":[{"name":"a","dose":"10 mg","startDate":"2026-11-01","schedules":[{"dayOfWeek":1,"timeOfDay":"08:00"}]}]}`
+		if code, b := call(h, "POST", "/api/v1/plans", "ana", fmt.Sprintf(plan, "Uno")); code != 201 && code != 200 {
+			t.Fatalf("primer plan: %d %s", code, b)
+		}
+		if code, _ := call(h, "POST", "/api/v1/plans", "ana", fmt.Sprintf(plan, "Dos")); code != 402 {
+			t.Fatalf("el segundo plan debía dar 402, dio %d", code)
+		}
+		code, body := call(h, "GET", "/api/v1/me/subscription", "ana", "")
+		if code != 200 || !strings.Contains(string(body), `"priceArs":2999`) || !strings.Contains(string(body), `"enabled":true`) {
+			t.Fatalf("estado inicial: %d %s", code, body)
+		}
+
+		// When: pide pagar
+		code, body = call(h, "POST", "/api/v1/me/subscription/checkout", "ana", "")
+		if code != 200 || field(t, body, "checkoutUrl") != "https://mp.test/pagar" {
+			t.Fatalf("checkout: %d %s", code, body)
+		}
+		// Then: con el pago pendiente sigue siendo gratis (y figura pendiente)
+		code, body = call(h, "GET", "/api/v1/me/subscription", "ana", "")
+		if field(t, body, "tier") != "free" || !strings.Contains(string(body), `"pending":true`) {
+			t.Fatalf("pendiente: %d %s", code, body)
+		}
+		if code, _ := call(h, "POST", "/api/v1/plans", "ana", fmt.Sprintf(plan, "Dos")); code != 402 {
+			t.Fatalf("sin pago confirmado no debe dejar crear: %d", code)
+		}
+
+		// When: llega un aviso con firma falsa, entonces se rechaza y no pasa nada
+		webhook := func(sig string) int {
+			req := httptest.NewRequest("POST", "/api/v1/webhooks/mercadopago?data.id=pre-1&type=subscription_preapproval", strings.NewReader(`{}`))
+			req.Header.Set("x-request-id", "req-1")
+			req.Header.Set("x-signature", sig)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+			return w.Code
+		}
+		next := time.Now().AddDate(0, 1, 0)
+		mp.subs["pre-1"].Status, mp.subs["pre-1"].NextPaymentDate = "authorized", &next
+		if c := webhook("ts=1,v1=00ff"); c != 401 {
+			t.Fatalf("firma falsa: esperaba 401 y fue %d", c)
+		}
+		// When: llega el aviso con la firma correcta
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write([]byte("id:pre-1;request-id:req-1;ts:1700000000;"))
+		if c := webhook("ts=1700000000,v1=" + hex.EncodeToString(mac.Sum(nil))); c != 200 {
+			t.Fatalf("firma buena: esperaba 200 y fue %d", c)
+		}
+		// Then: es Premium y puede crear sin tope
+		code, body = call(h, "GET", "/api/v1/me/subscription", "ana", "")
+		if field(t, body, "tier") != "premium" || strings.Contains(string(body), `"pending":true`) {
+			t.Fatalf("Premium: %d %s", code, body)
+		}
+		if code, b := call(h, "POST", "/api/v1/plans", "ana", fmt.Sprintf(plan, "Dos")); code != 201 && code != 200 {
+			t.Fatalf("con Premium debía crear: %d %s", code, b)
+		}
+		if code, _ := call(h, "POST", "/api/v1/me/subscription/checkout", "ana", ""); code != 409 {
+			t.Fatalf("siendo Premium, pagar de nuevo debía dar 409 y dio %d", code)
+		}
+
+		// When: se da de baja
+		code, body = call(h, "DELETE", "/api/v1/me/subscription", "ana", "")
+		if code != 200 || field(t, body, "tier") != "premium" || !strings.Contains(string(body), `"cancelled":true`) {
+			t.Fatalf("baja: %d %s", code, body)
+		}
+		if mp.subs["pre-1"].Status != "cancelled" {
+			t.Fatal("debía cancelarse en Mercado Pago")
+		}
+	})
+}
+
+type fakeLLM struct{ prompts []string }
+
+func (f *fakeLLM) Chat(_ context.Context, _ string, h []ai.Msg, tools []ai.Tool) (string, error) {
+	f.prompts = append(f.prompts, h[len(h)-1].Text)
+	for _, t := range tools { // el modelo consulta sus herramientas contra la base real
+		if _, err := t.Run(context.Background(), nil); err != nil {
+			return "", err
+		}
+	}
+	return "Todo en orden.", nil
+}
+
+type mailSink struct{ sent []accounts.Message }
+
+func (m *mailSink) Send(_ context.Context, msg accounts.Message) error {
+	m.sent = append(m.sent, msg)
+	return nil
+}
+
+func TestAIEndToEnd(t *testing.T) {
+	t.Run("dada la API real, cuando Ana pasa a Premium y acepta la IA, entonces puede usar el asistente y recibe el resumen semanal", func(t *testing.T) {
+		// Given: API con IA y correo simulados; Ana con un plan activo cargado hace dos semanas
+		pool := postgrestest.Setup(t)
+		llm, mails := &fakeLLM{}, &mailSink{}
+		h := NewHandler(Deps{Pool: pool, Verifier: fakeVerifier{}, JobSecret: "job", LLM: llm, ReportMailer: mails, WebBaseURL: "https://web/mediplan"})
+		if code, b := call(h, "POST", "/api/v1/auth/register", "ana", `{"role":"patient"}`); code != 200 {
+			t.Fatalf("registro: %d %s", code, b)
+		}
+		plan := `{"name":"Presión","medications":[{"name":"Enalapril","dose":"10 mg","startDate":"2026-01-01","stockUnits":2,"stockAlertAt":5,"schedules":[{"dayOfWeek":0,"timeOfDay":"08:00"},{"dayOfWeek":1,"timeOfDay":"08:00"},{"dayOfWeek":2,"timeOfDay":"08:00"},{"dayOfWeek":3,"timeOfDay":"08:00"},{"dayOfWeek":4,"timeOfDay":"08:00"},{"dayOfWeek":5,"timeOfDay":"08:00"},{"dayOfWeek":6,"timeOfDay":"08:00"}]}]}`
+		if code, b := call(h, "POST", "/api/v1/plans", "ana", plan); code != 201 && code != 200 {
+			t.Fatalf("plan: %d %s", code, b)
+		}
+		ctx := context.Background()
+		_, _ = pool.Exec(ctx, `UPDATE treatment_plans SET created_at = now() - interval '14 days'`)
+
+		// Then: gratis, no puede pedir el resumen ni chatear
+		if code, _ := call(h, "PUT", "/api/v1/me/preferences", "ana", `{"weeklyReport":true,"aiConsent":true}`); code != 402 {
+			t.Fatalf("el resumen es Premium: esperaba 402 y fue %d", code)
+		}
+		if code, b := call(h, "POST", "/api/v1/assistant/chat", "ana", `{"messages":[{"role":"user","text":"hola"}]}`); code != 402 || field(t, b, "code") != "premium_required" {
+			t.Fatalf("chat gratis: %d %s", code, b)
+		}
+
+		// When: pasa a Premium
+		if _, err := pool.Exec(ctx, `INSERT INTO subscriptions (user_id, tier, status, current_period_end) SELECT id, 'premium', 'active', now() + interval '30 days' FROM users WHERE email = 'ana@mail.com'`); err != nil {
+			t.Fatal(err)
+		}
+		// Then: sin aceptar la IA, el chat pide consentimiento (403)
+		if code, b := call(h, "POST", "/api/v1/assistant/chat", "ana", `{"messages":[{"role":"user","text":"hola"}]}`); code != 403 || field(t, b, "code") != "ai_consent_required" || len(llm.prompts) != 0 {
+			t.Fatalf("sin consentimiento: %d %s", code, b)
+		}
+		// When: acepta la IA y activa el resumen
+		if code, b := call(h, "PUT", "/api/v1/me/preferences", "ana", `{"weeklyReport":true,"aiConsent":true}`); code != 200 {
+			t.Fatalf("preferencias: %d %s", code, b)
+		}
+		if code, b := call(h, "GET", "/api/v1/me/preferences", "ana", ""); code != 200 || !strings.Contains(string(b), `"aiConsent":true`) || !strings.Contains(string(b), `"assistantAvailable":true`) {
+			t.Fatalf("leer preferencias: %d %s", code, b)
+		}
+		// Then: el asistente responde
+		if code, b := call(h, "POST", "/api/v1/assistant/chat", "ana", `{"messages":[{"role":"user","text":"¿Cómo vengo?"}]}`); code != 200 || field(t, b, "reply") != "Todo en orden." {
+			t.Fatalf("chat: %d %s", code, b)
+		}
+
+		// When: corre la tarea semanal (sin secreto, rechazada; con secreto, envía)
+		job := func(secret string) (int, []byte) {
+			req := httptest.NewRequest("POST", "/internal/jobs/weekly-reports", nil)
+			req.Header.Set("X-Job-Secret", secret)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+			return w.Code, w.Body.Bytes()
+		}
+		if code, _ := job("mal"); code != 401 {
+			t.Fatalf("secreto malo: %d", code)
+		}
+		code, b := job("job")
+		if code != 200 || !strings.Contains(string(b), `"sent":1`) || len(mails.sent) != 1 || mails.sent[0].To != "ana@mail.com" {
+			t.Fatalf("tarea: %d %s mails=%d", code, b, len(mails.sent))
+		}
+		if !strings.Contains(mails.sent[0].Text, "Enalapril") || !strings.Contains(mails.sent[0].Text, "Stock bajo") {
+			t.Fatalf("correo inesperado: %s", mails.sent[0].Text)
+		}
+		// Then: una segunda corrida la misma semana no vuelve a enviar
+		if _, b := job("job"); !strings.Contains(string(b), `"sent":0`) || len(mails.sent) != 1 {
+			t.Fatalf("segunda corrida: %s mails=%d", b, len(mails.sent))
 		}
 	})
 }

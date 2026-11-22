@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -82,17 +83,25 @@ func initDB() error {
 
 func applyMigration(ctx context.Context) error {
 	_, file, _, _ := runtime.Caller(0)
-	path := filepath.Join(filepath.Dir(file), "..", "..", "..", "..", "migrations", "001_init.sql")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return err
+	files, err := filepath.Glob(filepath.Join(filepath.Dir(file), "..", "..", "..", "..", "migrations", "*.sql"))
+	if err != nil || len(files) == 0 {
+		return fmt.Errorf("no se encontraron migraciones: %v", err)
 	}
-	up := string(raw)
-	if i := strings.Index(up, "-- +goose Down"); i >= 0 {
-		up = up[:i]
+	sort.Strings(files) // 001, 002, ...
+	for _, path := range files {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		up := string(raw)
+		if i := strings.Index(up, "-- +goose Down"); i >= 0 {
+			up = up[:i]
+		}
+		if _, err = pool.Exec(ctx, up, pgx.QueryExecModeSimpleProtocol); err != nil { // varias sentencias a la vez
+			return fmt.Errorf("%s: %w", filepath.Base(path), err)
+		}
 	}
-	_, err = pool.Exec(ctx, up, pgx.QueryExecModeSimpleProtocol) // varias sentencias a la vez
-	return err
+	return nil
 }
 
 func teardown() {

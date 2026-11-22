@@ -9,6 +9,7 @@ import (
 
 	"github.com/lea/mediplan-api/internal/usecase/notifications"
 	"github.com/lea/mediplan-api/internal/usecase/reminders"
+	"github.com/lea/mediplan-api/internal/usecase/reports"
 )
 
 type NotificationsHandler struct{ svc *notifications.Service }
@@ -81,6 +82,28 @@ func noContent(w http.ResponseWriter, err error) {
 type JobsHandler struct {
 	secret    string
 	reminders *reminders.Service
+	reports   *reports.Service // nil = el resumen semanal no está habilitado
+}
+
+// WithReports habilita POST /internal/jobs/weekly-reports.
+func (h *JobsHandler) WithReports(r *reports.Service) *JobsHandler { h.reports = r; return h }
+
+func (h *JobsHandler) authorized(r *http.Request) bool {
+	return subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Job-Secret")), []byte(h.secret)) == 1
+}
+
+// WeeklyReports: POST /internal/jobs/weekly-reports con el header X-Job-Secret. Lo llama una tarea semanal.
+func (h *JobsHandler) WeeklyReports(w http.ResponseWriter, r *http.Request) {
+	if !h.authorized(r) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "no autorizado"})
+		return
+	}
+	res, err := h.reports.Run(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"sent": res.Sent, "skipped": res.Skipped, "failed": res.Failed})
 }
 
 func NewJobsHandler(secret string, rem *reminders.Service) *JobsHandler {

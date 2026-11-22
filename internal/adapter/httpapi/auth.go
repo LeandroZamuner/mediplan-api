@@ -94,8 +94,24 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func writeError(w http.ResponseWriter, err error) {
+	var limit *domain.PlanLimitError
+	if errors.As(err, &limit) {
+		// 402: la app muestra la pantalla de Premium usando el recurso y el tope.
+		writeJSON(w, http.StatusPaymentRequired, map[string]any{"error": limit.Error(), "code": "plan_limit", "resource": limit.Resource, "limit": limit.Limit})
+		return
+	}
 	status, msg := http.StatusInternalServerError, "error interno"
 	switch {
+	case errors.Is(err, domain.ErrPremiumRequired):
+		writeJSON(w, http.StatusPaymentRequired, map[string]any{"error": err.Error(), "code": "premium_required"})
+		return
+	case errors.Is(err, domain.ErrConsentRequired):
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": err.Error(), "code": "ai_consent_required"})
+		return
+	case errors.Is(err, domain.ErrInvalidMessage):
+		status, msg = http.StatusUnprocessableEntity, err.Error()
+	case errors.Is(err, domain.ErrAIUnavailable):
+		status, msg = http.StatusServiceUnavailable, err.Error()
 	case errors.Is(err, domain.ErrInvalidToken):
 		status, msg = http.StatusUnauthorized, err.Error()
 	case errors.Is(err, domain.ErrEmailNotVerified):
@@ -106,8 +122,12 @@ func writeError(w http.ResponseWriter, err error) {
 		status, msg = http.StatusUnprocessableEntity, err.Error()
 	case errors.Is(err, domain.ErrTooManyRequests):
 		status, msg = http.StatusTooManyRequests, err.Error()
-	case errors.Is(err, domain.ErrMailUnavailable):
+	case errors.Is(err, domain.ErrMailUnavailable), errors.Is(err, domain.ErrPaymentsDisabled):
 		status, msg = http.StatusServiceUnavailable, err.Error()
+	case errors.Is(err, domain.ErrPaymentUnavailable):
+		status, msg = http.StatusBadGateway, err.Error()
+	case errors.Is(err, domain.ErrAlreadyPremium):
+		status, msg = http.StatusConflict, err.Error()
 	case errors.Is(err, domain.ErrForbidden):
 		status, msg = http.StatusForbidden, err.Error()
 	case errors.Is(err, domain.ErrAlreadyInvited):

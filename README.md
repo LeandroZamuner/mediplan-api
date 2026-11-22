@@ -56,6 +56,70 @@ Variables (todas necesarias; **las dos marcadas son secretos: solo en el panel d
 Se usa la API HTTPS de Brevo y no SMTP porque **Render bloquea el SMTP saliente (puertos 25, 465 y 587) en el plan gratuito**.
 En local, con el emulador de Auth (`FIREBASE_AUTH_EMULATOR_HOST`) y `WEB_BASE_URL`, no hacen falta claves: el correo se escribe en el log.
 
+## Plan gratis y Premium
+
+Cada cuenta es gratis o Premium (tabla `subscriptions`; sin fila = gratis). Los topes **solo frenan crear** cosas nuevas: nunca se borra
+ni se bloquea la edición de lo que ya existe.
+
+| | Gratis | Premium |
+| --- | --- | --- |
+| Planes activos | 1 | sin tope |
+| Medicamentos (entre sus planes activos) | 3 | sin tope |
+| Cuidadores por plan (pendientes o aceptados) | 1 | sin tope |
+
+- Rige siempre el nivel del **dueño del plan** (aunque agregue una cuidadora).
+- Superar un tope responde `402` con `{"error", "code":"plan_limit", "resource":"plans|medications|caregivers", "limit"}`.
+- `GET /api/v1/me/subscription` devuelve `tier`, `cancelled`, `currentPeriodEnd`, `limits` (`null` = sin tope) y `usage`.
+- Una suscripción activa con el período vencido hace menos de 3 días sigue siendo Premium (cobro demorado); una cancelada
+  lo es hasta que termina el período pagado.
+
+## Pago de Premium con Mercado Pago
+
+Premium se cobra con una **suscripción mensual de Mercado Pago** (pesos argentinos). La cuenta **sigue siendo gratis hasta que el pago se confirma**.
+
+| Ruta | Qué hace |
+|---|---|
+| `POST /api/v1/me/subscription/checkout` | Crea la suscripción pendiente y devuelve `{checkoutUrl}` para pagar. Acepta `{"payerEmail"}` (correo de la cuenta de Mercado Pago de quien paga). `409` si ya es Premium. |
+| `POST /api/v1/me/subscription/sync` | La app lo llama al volver de pagar: consulta a Mercado Pago y devuelve el estado. |
+| `DELETE /api/v1/me/subscription` | Baja: deja de renovarse y sigue Premium hasta el fin del período pagado. |
+| `POST /api/v1/webhooks/mercadopago` | Aviso de Mercado Pago (público). Se valida la firma `x-signature` y **además** se consulta el estado real a Mercado Pago: un aviso falso no puede dar Premium. |
+| `GET /api/v1/me/subscription` | Suma `pending` (pago iniciado sin confirmar) y `payments: {enabled, priceArs, currency, period}`. Si hay algo pendiente o el período está por vencer, se actualiza solo desde Mercado Pago. |
+
+Variables de entorno (en el hosting, nunca en el repo):
+
+| Variable | Para qué |
+|---|---|
+| `MP_ACCESS_TOKEN` | Access Token de **producción** de la aplicación de Mercado Pago (secreto). Sin él, los pagos quedan deshabilitados. |
+| `MP_WEBHOOK_SECRET` | Clave secreta de los webhooks (secreto). |
+| `PREMIUM_PRICE_ARS` | Precio mensual en pesos (por defecto 2999). |
+| `API_PUBLIC_URL` | URL pública de esta API para los avisos (en Render se toma sola de `RENDER_EXTERNAL_URL`). |
+| `WEB_BASE_URL` | Ya existente: a esa web vuelve la persona después de pagar (`/premium/`). |
+
+## Inteligencia artificial: resumen semanal y asistente (Premium)
+
+Dos funciones Premium con **Google Gemini** (plan gratuito de AI Studio). Ambas son opcionales y requieren que la persona las **acepte** (`PUT /me/preferences`, todo apagado por defecto).
+
+- **Resumen semanal por correo** (`POST /internal/jobs/weekly-reports`, lo llama el workflow `weekly-reports.yml` los lunes). Solo a cuentas Premium con correo verificado que lo activaron; no se repite en la misma semana. El texto lo redacta la IA **solo si la persona aceptó**, y el modelo recibe **únicamente números anónimos** (cumplimiento, día con más omisiones, cantidad de stock bajo): ni nombre, ni correo, ni medicamentos. Si la IA falla o no está configurada, el correo sale con un texto fijo.
+- **Asistente** (`POST /api/v1/assistant/chat`): responde sobre el tratamiento de quien pregunta mediante herramientas de **solo lectura** (`get_plans`, `get_doses`, `get_adherence`) sobre sus propios datos. No diagnostica, no indica dosis ni cambios; ante emergencias deriva al 107/911. Límites: 6 mensajes por minuto y 60 por día por persona. **No se guardan las conversaciones**: la app reenvía el historial en cada pedido.
+- `GET/PUT /me/preferences`: `{weeklyReport, aiConsent}` (+ `assistantAvailable` en la respuesta). Errores propios: `402 premium_required` y `403 ai_consent_required`.
+
+| Variable | Para qué |
+|---|---|
+| `GEMINI_API_KEY` | Clave de Google AI Studio (secreto). Sin ella no hay asistente y el resumen usa texto fijo. |
+| `GEMINI_MODEL` | Modelo a usar (por defecto `gemini-3.5-flash-lite`). Google renueva los nombres seguido: si falla, revisar la lista en AI Studio. |
+
+Importante: en el plan gratuito de Gemini, Google puede usar el contenido enviado para mejorar sus productos. Por eso solo se envían datos mínimos y anónimos, y solo con consentimiento.
+
+## Migraciones
+
+Los archivos de `migrations/` se aplican **en orden** (`001`, `002`, …) y son idempotentes desde la 002. En una base ya creada alcanza con aplicar
+las nuevas **antes** de desplegar el código que las usa:
+
+```bash
+read -rs DATABASE_URL            # pegá la URL de conexión y Enter
+sed '/-- +goose Down/,$d' migrations/002_subscriptions.sql | docker run --rm -i postgres:16 psql "$DATABASE_URL" -v ON_ERROR_STOP=1
+```
+
 ## Tests
 
 ```bash

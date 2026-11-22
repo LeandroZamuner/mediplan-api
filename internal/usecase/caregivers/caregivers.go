@@ -41,12 +41,21 @@ type TokenGen interface {
 	Hash(raw string) string
 }
 
+// Limiter dice qué topes tiene un usuario según su nivel (gratis o Premium). Es opcional: sin él no hay topes.
+type Limiter interface {
+	LimitsOf(ctx context.Context, userID string) (domain.Limits, error)
+}
+
 type Service struct {
 	invites InviteRepo
 	plans   PlanReader
 	tokens  TokenGen
+	limit   Limiter // opcional
 	now     func() time.Time
 }
+
+// SetLimits activa el tope de cuidadores por plan del nivel gratuito (rige el nivel de la dueña del plan).
+func (s *Service) SetLimits(l Limiter) { s.limit = l }
 
 func NewService(i InviteRepo, p PlanReader, t TokenGen) *Service {
 	return &Service{invites: i, plans: p, tokens: t, now: time.Now}
@@ -69,9 +78,23 @@ func (s *Service) Invite(ctx context.Context, actor *domain.User, planID, email 
 	if err != nil {
 		return nil, "", err
 	}
+	vigentes := 0 // pendientes o aceptados: las rechazadas no cuentan
 	for _, c := range existing {
-		if c.InviteEmail == email && c.Status != domain.InviteRejected {
+		if c.Status == domain.InviteRejected {
+			continue
+		}
+		if c.InviteEmail == email {
 			return nil, "", domain.ErrAlreadyInvited
+		}
+		vigentes++
+	}
+	if s.limit != nil {
+		lim, err := s.limit.LimitsOf(ctx, plan.PatientID)
+		if err != nil {
+			return nil, "", err
+		}
+		if domain.Exceeds(vigentes, 1, lim.MaxCaregiversPerPlan) {
+			return nil, "", &domain.PlanLimitError{Resource: domain.ResourceCaregivers, Limit: lim.MaxCaregiversPerPlan}
 		}
 	}
 	raw, hash, err := s.tokens.New()

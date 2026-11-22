@@ -93,7 +93,7 @@ Variables de entorno (en el hosting, nunca en el repo):
 | `MP_WEBHOOK_SECRET` | Clave secreta de los webhooks (secreto). |
 | `PREMIUM_PRICE_ARS` | Precio mensual en pesos (por defecto 2999). |
 | `API_PUBLIC_URL` | URL pública de esta API para los avisos (en Render se toma sola de `RENDER_EXTERNAL_URL`). |
-| `WEB_BASE_URL` | Ya existente: a esa web vuelve la persona después de pagar (`/planes/`). |
+| `WEB_BASE_URL` | Ya existente: a esa web vuelve la persona después de pagar (`/premium/`). |
 
 ## Migraciones
 

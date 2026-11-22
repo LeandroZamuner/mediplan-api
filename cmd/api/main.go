@@ -82,7 +82,7 @@ func main() {
 	// Pagos reales con Mercado Pago: hace falta el Access Token y la URL de la web (adónde vuelve la persona al pagar).
 	var payments *app.PaymentsDeps
 	if cfg.MPAccessToken != "" && cfg.WebBaseURL != "" {
-		pcfg := billing.PaymentsConfig{PriceARS: cfg.PriceARS, BackURL: strings.TrimRight(cfg.WebBaseURL, "/") + "/planes/"}
+		pcfg := billing.PaymentsConfig{PriceARS: cfg.PriceARS, BackURL: strings.TrimRight(cfg.WebBaseURL, "/") + "/premium/"}
 		if cfg.APIPublicURL != "" {
 			pcfg.NotificationURL = cfg.APIPublicURL + "/api/v1/webhooks/mercadopago"
 		}

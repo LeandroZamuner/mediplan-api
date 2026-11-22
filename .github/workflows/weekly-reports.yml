@@ -1,0 +1,24 @@
+name: Resumen semanal
+
+# Los lunes a las 8:00 (hora de Argentina) llama a la API para enviar por correo el resumen semanal
+# a quienes son Premium y lo activaron. La API evita enviar dos veces en la misma semana.
+on:
+  schedule:
+    - cron: "0 11 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Ejecutar el resumen semanal
+        env:
+          API_URL: ${{ vars.API_URL }}
+          JOB_SECRET: ${{ secrets.JOB_SECRET }}
+        run: |
+          test -n "$API_URL" && test -n "$JOB_SECRET" || { echo "Faltan la variable API_URL o el secreto JOB_SECRET"; exit 1; }
+          curl --fail --silent --show-error --max-time 300 --retry 2 --retry-delay 20 \
+            -X POST -H "X-Job-Secret: $JOB_SECRET" "$API_URL/internal/jobs/weekly-reports"
